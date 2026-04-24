@@ -20,6 +20,9 @@ class CollectionLog(
     @Column(name = "ai_processed_count")
     val aiProcessedCount: Int = 0,
 
+    @Column(name = "twitter_api_call_count")
+    val twitterApiCallCount: Int = 0,
+
     @Column(name = "error_msg", columnDefinition = "TEXT")
     val errorMsg: String? = null,
 
