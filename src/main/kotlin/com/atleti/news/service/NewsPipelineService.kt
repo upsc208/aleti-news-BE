@@ -32,21 +32,30 @@ class NewsPipelineService(
             articles.addAll(scraperService.scrapeMarcaAtm())
 
             // 2. Scraping (Twitter via RapidAPI)
-            // 1티어 기자들 및 ITK 리스트
-            val journalists = listOf("MatteoMoretto", "FabrizioRomano", "David_Medina", "rubenuria")
+            // 1티어 기자들 및 ITK 리스트 (최신 활동 계정 위주)
+            val journalists = listOf(
+                "MatteoMoretto", "FabrizioRomano", "atletiuniverse", 
+                "RubenUria", "PedroFullanaSER", "MercadoATM_", 
+                "EfectoSime1", "medinamarca"
+            )
             
             for (username in journalists) {
-                // 오늘 남은 횟수가 있는지 확인
-                if (twitterApiService.getTodayApiUsage() + twitterApiCallCount < 45) {
+                println("🔍 Twitter 수집 시도 중: @$username")
+                // 오늘 남은 횟수가 있는지 확인 (안전하게 45회 제한)
+                val currentUsage = twitterApiService.getTodayApiUsage()
+                if (currentUsage + twitterApiCallCount < 45) {
                     val tweets = twitterApiService.getTweets(username)
                     if (tweets.isNotEmpty()) {
                         articles.addAll(tweets)
                         twitterApiCallCount++
+                        println("✅ @$username 에서 ${tweets.size}개의 트윗을 가져왔습니다.")
+                    } else {
+                        println("ℹ️ @$username 에서 가져온 트윗이 없습니다. (계정 비공개 또는 API 응답 없음)")
                     }
-                    // 429 오류 방지를 위한 2초 대기
-                    kotlinx.coroutines.delay(2000)
+                    // 429 오류 방지를 위한 3초 대기
+                    kotlinx.coroutines.delay(3000)
                 } else {
-                    println("⏭️ 오늘 Twitter API 호출 제한에 도달하여 @\$username 수집을 건너뜁니다.")
+                    println("⏭️ 오늘 Twitter API 호출 제한에 도달하여 @$username 수집을 건너뜁니다.")
                 }
             }
 
@@ -56,9 +65,11 @@ class NewsPipelineService(
                 // 3. Duplicate Check
                 if (!newsArticleRepository.existsByOriginalUrl(article.url)) {
                     // 4. AI Processing
+                    println("🤖 AI 판별 중: ${article.title.take(30)}...")
                     val geminiResult = geminiService.processArticle(article.title, article.sourceName)
                     
                     if (geminiResult != null && geminiResult.is_atm_related) {
+                        println("✅ AI 통과: ${geminiResult.title_ko}")
                         aiProcessedCount++
                         
                         // 5. Save
@@ -73,7 +84,11 @@ class NewsPipelineService(
                                 publishedAt = OffsetDateTime.now()
                             )
                         )
+                    } else {
+                        println("❌ AI 필터링됨 (관련 없음 또는 에러)")
                     }
+                } else {
+                    println("⏭️ 중복 기사 건너뜀: ${article.title.take(30)}...")
                 }
             }
 

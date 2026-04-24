@@ -27,7 +27,7 @@ class TwitterApiService(
     // 오늘 사용한 API 호출 횟수 확인
     fun getTodayApiUsage(): Int {
         val startOfDay = OffsetDateTime.of(LocalDate.now(), LocalTime.MIN, ZoneOffset.UTC)
-        return collectionLogRepository.sumTwitterApiCallCountSince(startOfDay) ?: 0
+        return collectionLogRepository.sumTwitterApiCallCountSince(startOfDay)?.toInt() ?: 0
     }
 
     suspend fun getTweets(username: String): List<ScrapedArticle> = withContext(Dispatchers.IO) {
@@ -49,7 +49,9 @@ class TwitterApiService(
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
             
             if (response.statusCode() == 200) {
-                val articles = parseTweets(response.body(), username)
+                val responseBody = response.body()
+                println("DEBUG [RapidAPI] Response Body: ${responseBody.take(200)}...")
+                val articles = parseTweets(responseBody, username)
                 println("✅ [RapidAPI] @$username 트윗 수집 완료: ${articles.size}개 발견")
                 articles
             } else {

@@ -17,17 +17,22 @@ class GeminiService(
     private val webClient = WebClient.builder().build()
 
     suspend fun processArticle(title: String, sourceName: String): GeminiResponse? {
-        if (apiKey.isBlank()) {
-            println("경고: GEMINI_API_KEY가 설정되지 않았습니다. AI 판별을 건너뜁니다.")
+        if (apiKey == "NO_KEY" || apiKey.isBlank()) {
+            println("⚠️ 경고: GEMINI_API_KEY가 설정되지 않았습니다. (.env 파일이나 환경 변수를 확인하세요)")
             return null
         }
 
-        // 429 방지를 위한 약간의 지연 (무료 티어 배려)
-        delay(2000)
+        // 429 방지를 위한 4초 지연 (분당 최대 15회 제한 준수)
+        delay(4000)
 
         val prompt = """
             당신은 아틀레티코 마드리드(Atletico Madrid) 전문 기자입니다. 
             다음 뉴스 제목이 아틀레티코 마드리드 구단과 직접적으로 관련된 뉴스인지 판별하고, 관련이 있다면 한국어로 3줄 요약해주세요.
+            
+            **판별 지침:**
+            1. 'Atleti', 'ATM', 'Rojiblancos', 'Colchoneros', 'Cholo', 'Metropolitano' 등을 포함합니다.
+            2. 현재 아틀레티코 1군 선수단 및 유스 선수 관련 소식은 모두 포함합니다.
+            3. **중요**: 출처(Source)가 'MercadoATM_', 'atletiuniverse' 등 아틀레티코 전문 매체인 경우, 제목에 구단명이 없더라도 해당 구단 선수에 대한 소식일 확률이 매우 높으므로 적극적으로 관련성을 인정하세요.
             
             뉴스 제목: $title
             출처: $sourceName
@@ -38,7 +43,6 @@ class GeminiService(
               "title_ko": "뉴스 제목 번역",
               "summary_ko": "1. 첫 번째 요약\n2. 두 번째 요약\n3. 세 번째 요약"
             }
-            관련이 없다면 is_atm_related를 false로 설정하고 나머지 필드는 비워두세요.
         """.trimIndent()
 
         return try {
@@ -55,7 +59,6 @@ class GeminiService(
                 )
             )
 
-            // 2026년 기준 gemini-flash-latest가 가장 안정적
             val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=$apiKey"
 
             webClient.post()
@@ -63,7 +66,13 @@ class GeminiService(
                 .bodyValue(requestBody)
                 .retrieve()
                 .awaitBody<Map<String, Any>>()
-                .let { parseGeminiResponse(it) }
+                .let { 
+                    val result = parseGeminiResponse(it)
+                    if (result != null) {
+                        println("🤖 AI 응답 결과: is_related=${result.is_atm_related}, title=${result.title_ko}")
+                    }
+                    result
+                }
         } catch (e: WebClientResponseException) {
             println("Gemini API 호출 실패 (HTTP ${e.statusCode}): ${e.responseBodyAsString}")
             null
@@ -80,6 +89,8 @@ class GeminiService(
         val parts = content["parts"] as? List<*> ?: return null
         val firstPart = parts.firstOrNull() as? Map<*, *> ?: return null
         val text = firstPart["text"] as? String ?: return null
+        
+        println("DEBUG [Gemini Raw Response]: $text")
 
         val cleanJson = text.trim()
             .removePrefix("```json")
