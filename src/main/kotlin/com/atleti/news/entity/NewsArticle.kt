@@ -11,7 +11,7 @@ import java.time.OffsetDateTime
 class NewsArticle(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val id: Long? = null,
+    var id: Long? = null,
 
     @Column(name = "source_name", nullable = false)
     val sourceName: String,
@@ -24,6 +24,12 @@ class NewsArticle(
 
     @Column(name = "summary_ko", columnDefinition = "TEXT")
     val summaryKo: String?,
+
+    @Column(name = "content_ko", columnDefinition = "TEXT")
+    val contentKo: String?, // 번역 전문
+
+    @Column(name = "content_raw", columnDefinition = "TEXT")
+    val contentRaw: String?, // 원문 보존용
 
     @Column(name = "image_url", columnDefinition = "TEXT")
     val imageUrl: String?,

@@ -8,7 +8,7 @@ import java.time.OffsetDateTime
 class CollectionLog(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val id: Long? = null,
+    var id: Long? = null,
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)

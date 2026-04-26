@@ -65,35 +65,43 @@ class TwitterApiService(
     }
 
     private fun parseTweets(jsonBody: String, username: String): List<ScrapedArticle> {
-        // twitter-api45의 응답은 보통 최상위가 배열이거나 'timeline' 키를 가집니다.
         val tweets = try {
             val json = JSONObject(jsonBody)
-            json.optJSONArray("timeline") ?: return emptyList()
+            json.optJSONArray("timeline") 
+                ?: json.optJSONArray("results") 
+                ?: json.optJSONArray("tweets")
+                ?: if (jsonBody.trim().startsWith("[")) org.json.JSONArray(jsonBody) else return emptyList()
         } catch (e: Exception) {
-            // 응답이 배열로 직접 올 경우 처리
             try {
                 org.json.JSONArray(jsonBody)
             } catch (e2: Exception) {
+                println("⚠️ [RapidAPI] JSON 파싱 실패: \${e2.message}")
                 return emptyList()
             }
         }
         
         val articles = mutableListOf<ScrapedArticle>()
-        for (i in 0 until tweets.length()) {
+        for (i in 0 until (tweets as org.json.JSONArray).length()) {
             val tweet = tweets.getJSONObject(i)
-            val text = tweet.optString("text") ?: ""
-            // twitter-api45는 tweet_id 대신 id_str을 쓰기도 합니다.
-            val tweetId = tweet.optString("tweet_id").ifBlank { tweet.optString("id_str") }
+            val text = tweet.optString("text") ?: tweet.optString("full_text") ?: ""
             
-            if (text.isNotBlank()) {
+            // 다양한 ID 필드 확인
+            val tweetId = tweet.optString("tweet_id")
+                .ifBlank { tweet.optString("id_str") }
+                .ifBlank { tweet.optString("id") }
+            
+            if (text.isNotBlank() && tweetId.isNotBlank()) {
+                val fullUrl = "https://x.com/$username/status/$tweetId"
+                println("DEBUG [Twitter Scraper] Found Tweet: $fullUrl | Text: ${text.take(50)}...")
                 articles.add(
                     ScrapedArticle(
-                        title = text.take(100) + if (text.length > 100) "..." else "",
-                        url = "https://x.com/$username/status/$tweetId",
+                        title = text, // 전체 텍스트 보존
+                        url = fullUrl,
                         imageUrl = null,
                         sourceName = "X (@$username)"
                     )
                 )
+
             }
         }
         return articles

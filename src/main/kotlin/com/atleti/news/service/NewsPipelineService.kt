@@ -14,6 +14,7 @@ import java.time.OffsetDateTime
 class NewsPipelineService(
     private val scraperService: ScraperService,
     private val twitterApiService: TwitterApiService,
+    private val nitterScraperService: NitterScraperService,
     private val geminiService: GeminiService,
     private val newsArticleRepository: NewsArticleRepository,
     private val collectionLogRepository: CollectionLogRepository
@@ -27,68 +28,103 @@ class NewsPipelineService(
         val startTime = System.currentTimeMillis()
 
         try {
-            // 1. Scraping (Marca)
+            // 1. Scraping (Marca) - 테스트를 위해 잠시 중단
             val articles = mutableListOf<ScrapedArticle>()
-            articles.addAll(scraperService.scrapeMarcaAtm())
+            // articles.addAll(scraperService.scrapeMarcaAtm())
+            println("ℹ️ Marca 수집은 테스트를 위해 비활성화되었습니다.")
 
-            // 2. Scraping (Twitter via RapidAPI)
-            // 1티어 기자들 및 ITK 리스트 (최신 활동 계정 위주)
+            // 2. Scraping (Twitter/X via RapidAPI Only)
             val journalists = listOf(
-                "MatteoMoretto", "FabrizioRomano", "atletiuniverse", 
+                "MatteoMoretto", "atletiuniverse", 
                 "RubenUria", "PedroFullanaSER", "MercadoATM_", 
                 "EfectoSime1", "medinamarca"
             )
             
             for (username in journalists) {
-                println("🔍 Twitter 수집 시도 중: @$username")
-                // 오늘 남은 횟수가 있는지 확인 (안전하게 45회 제한)
+                println("🔍 Twitter(RapidAPI) 수집 시도 중: @$username")
+
                 val currentUsage = twitterApiService.getTodayApiUsage()
                 if (currentUsage + twitterApiCallCount < 45) {
-                    val tweets = twitterApiService.getTweets(username)
-                    if (tweets.isNotEmpty()) {
-                        articles.addAll(tweets)
-                        twitterApiCallCount++
-                        println("✅ @$username 에서 ${tweets.size}개의 트윗을 가져왔습니다.")
-                    } else {
-                        println("ℹ️ @$username 에서 가져온 트윗이 없습니다. (계정 비공개 또는 API 응답 없음)")
+                    try {
+                        val tweets = twitterApiService.getTweets(username)
+                        if (tweets.isNotEmpty()) {
+                            articles.addAll(tweets)
+                            twitterApiCallCount++
+                            println("✅ [RapidAPI] @$username 에서 ${tweets.size}개의 트윗을 가져왔습니다.")
+                        } else {
+                            println("ℹ️ [RapidAPI] @$username 에서 가져온 트윗이 없습니다.")
+                        }
+                    } catch (e: Exception) {
+                        println("❌ [RapidAPI] @$username 수집 중 오류: ${e.message}")
                     }
-                    // 429 오류 방지를 위한 3초 대기
-                    kotlinx.coroutines.delay(3000)
                 } else {
-                    println("⏭️ 오늘 Twitter API 호출 제한에 도달하여 @$username 수집을 건너뜁니다.")
+                    println("⏭️ 오늘 호출 제한 도달: @$username 스킵")
                 }
+
+                kotlinx.coroutines.delay(2000)
             }
+
 
             scannedCount = articles.size
 
             articles.forEach { article ->
                 // 3. Duplicate Check
                 if (!newsArticleRepository.existsByOriginalUrl(article.url)) {
-                    // 4. AI Processing
-                    println("🤖 AI 판별 중: ${article.title.take(30)}...")
+                    
+                    val isTwitter = article.sourceName.startsWith("X (@")
+
+                    // 4. Pre-filtering (X 기사는 전담 기자이므로 필터링 생략)
+                    if (!isTwitter) {
+                        val keywords = listOf("atleti", "atletico", "simeone", "cholo", "rojiblanco", "metropolitano", "atm", "fichaje", "mercado")
+                        val lowerTitle = article.title.lowercase()
+                        val isPotentialNews = keywords.any { lowerTitle.contains(it) } || 
+                                              article.sourceName.contains("Marca")
+
+                        if (!isPotentialNews) {
+                            println("⏭️ 1차 필터링 탈락 (키워드 없음): ${article.title.take(30)}...")
+                            return@forEach
+                        }
+                    }
+
+                    // 5. AI Processing
+                    println("🤖 AI 분석 시작: ${article.title.take(40)}... (출처: ${article.sourceName})")
                     val geminiResult = geminiService.processArticle(article.title, article.sourceName)
                     
-                    if (geminiResult != null && geminiResult.is_atm_related) {
-                        println("✅ AI 통과: ${geminiResult.title_ko}")
+                    if (geminiResult == null && !isTwitter) {
+                        println("❌ AI 처리 오류: Gemini로부터 응답을 받지 못했습니다. (건너뜀)")
+                        return@forEach
+                    }
+
+                    // X 기사는 전담 기자들이므로 AI의 관련성 판별 결과나 AI 성공 여부와 무관하게 저장 시도
+                    if (isTwitter || (geminiResult != null && geminiResult.is_atm_related)) {
+                        val finalTitleKo = geminiResult?.title_ko ?: "뉴스 제목 (번역 대기 중)"
+                        val finalSummaryKo = geminiResult?.summary_ko ?: "핵심 요약 생성 실패" 
+                        val finalContentKo = geminiResult?.content_ko ?: "본문 번역 중 오류가 발생했습니다."
+
+                        println("✅ DB 저장 중: ${finalTitleKo.take(30)}...")
                         aiProcessedCount++
-                        
-                        // 5. Save
+
+                        // 6. Save
                         newsArticleRepository.save(
                             NewsArticle(
                                 sourceName = article.sourceName,
                                 originalUrl = article.url,
-                                titleKo = geminiResult.title_ko ?: article.title,
-                                summaryKo = geminiResult.summary_ko,
+                                titleKo = finalTitleKo,
+                                summaryKo = finalSummaryKo,
+                                contentKo = finalContentKo, // AI가 준 한국어 번역본만 저장
+                                contentRaw = article.title, // 영어 원문은 여기에만 저장
                                 imageUrl = article.imageUrl,
                                 isAtmRelated = true,
                                 publishedAt = OffsetDateTime.now()
                             )
                         )
-                    } else {
-                        println("❌ AI 필터링됨 (관련 없음 또는 에러)")
                     }
+ else {
+                        println("⏭️ AI 필터링됨: 관련 없는 소식 (이유: ${geminiResult?.reason})")
+                    }
+
                 } else {
-                    println("⏭️ 중복 기사 건너뜀: ${article.title.take(30)}...")
+                    println("⏭️ 중복 건너뜀: ${article.title.take(30)}...")
                 }
             }
 

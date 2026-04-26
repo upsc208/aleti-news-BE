@@ -1,9 +1,9 @@
 plugins {
-	kotlin("jvm") version "2.2.21"
-	kotlin("plugin.spring") version "2.2.21"
-	id("org.springframework.boot") version "4.0.5"
+	kotlin("jvm") version "2.1.10"
+	kotlin("plugin.spring") version "2.1.10"
+	id("org.springframework.boot") version "3.4.2"
 	id("io.spring.dependency-management") version "1.1.7"
-	kotlin("plugin.jpa") version "2.2.21"
+	kotlin("plugin.jpa") version "2.1.10"
 }
 
 group = "com.atleti"
@@ -42,7 +42,7 @@ dependencies {
 
 kotlin {
 	compilerOptions {
-		freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+		freeCompilerArgs.addAll("-Xjsr305=strict")
 	}
 }
 
