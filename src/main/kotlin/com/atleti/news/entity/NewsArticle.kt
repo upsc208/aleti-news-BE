@@ -3,6 +3,8 @@ package com.atleti.news.entity
 import jakarta.persistence.*
 import java.time.OffsetDateTime
 
+enum class ArticleType { WEB_ARTICLE, SNS_POST }
+
 @Entity
 @Table(
     name = "news_article",
@@ -13,8 +15,15 @@ class NewsArticle(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null,
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "article_type", nullable = false)
+    val articleType: ArticleType = ArticleType.WEB_ARTICLE,
+
     @Column(name = "source_name", nullable = false)
     val sourceName: String,
+
+    @Column(name = "author_name")
+    val authorName: String? = null, // 트위터 핸들 또는 기사 작성자
 
     @Column(name = "original_url", nullable = false, unique = true)
     val originalUrl: String,

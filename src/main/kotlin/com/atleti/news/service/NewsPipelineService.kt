@@ -17,8 +17,10 @@ class NewsPipelineService(
     private val nitterScraperService: NitterScraperService,
     private val geminiService: GeminiService,
     private val newsArticleRepository: NewsArticleRepository,
-    private val collectionLogRepository: CollectionLogRepository
+    private val collectionLogRepository: CollectionLogRepository,
+    @org.springframework.beans.factory.annotation.Value("\${atleti.news.keywords}") private val keywordString: String
 ) {
+    private val keywords = keywordString.split(",").map { it.trim().lowercase() }
 
     @Scheduled(fixedRate = 15 * 60 * 1000) // 15분마다 실행
     fun runPipeline() = runBlocking {
@@ -28,10 +30,10 @@ class NewsPipelineService(
         val startTime = System.currentTimeMillis()
 
         try {
-            // 1. Scraping (Marca) - 테스트를 위해 잠시 중단
+            // 1. Scraping (Marca)
             val articles = mutableListOf<ScrapedArticle>()
-            // articles.addAll(scraperService.scrapeMarcaAtm())
-            println("ℹ️ Marca 수집은 테스트를 위해 비활성화되었습니다.")
+            articles.addAll(scraperService.scrapeMarcaAtm())
+            println("✅ Marca 수집 완료: ${articles.size}개 발견")
 
             // 2. Scraping (Twitter/X via RapidAPI Only)
             val journalists = listOf(
@@ -51,8 +53,6 @@ class NewsPipelineService(
                             articles.addAll(tweets)
                             twitterApiCallCount++
                             println("✅ [RapidAPI] @$username 에서 ${tweets.size}개의 트윗을 가져왔습니다.")
-                        } else {
-                            println("ℹ️ [RapidAPI] @$username 에서 가져온 트윗이 없습니다.")
                         }
                     } catch (e: Exception) {
                         println("❌ [RapidAPI] @$username 수집 중 오류: ${e.message}")
@@ -71,14 +71,12 @@ class NewsPipelineService(
                 // 3. Duplicate Check
                 if (!newsArticleRepository.existsByOriginalUrl(article.url)) {
                     
-                    val isTwitter = article.sourceName.startsWith("X (@")
+                    val isTwitter = article.sourceName.contains("X (", ignoreCase = true)
 
-                    // 4. Pre-filtering (X 기사는 전담 기자이므로 필터링 생략)
+                    // 4. Pre-filtering (유료 버전이므로 넉넉하게 키워드 체크)
                     if (!isTwitter) {
-                        val keywords = listOf("atleti", "atletico", "simeone", "cholo", "rojiblanco", "metropolitano", "atm", "fichaje", "mercado")
                         val lowerTitle = article.title.lowercase()
-                        val isPotentialNews = keywords.any { lowerTitle.contains(it) } || 
-                                              article.sourceName.contains("Marca")
+                        val isPotentialNews = keywords.any { lowerTitle.contains(it) }
 
                         if (!isPotentialNews) {
                             println("⏭️ 1차 필터링 탈락 (키워드 없음): ${article.title.take(30)}...")
@@ -90,37 +88,32 @@ class NewsPipelineService(
                     println("🤖 AI 분석 시작: ${article.title.take(40)}... (출처: ${article.sourceName})")
                     val geminiResult = geminiService.processArticle(article.title, article.sourceName)
                     
-                    if (geminiResult == null && !isTwitter) {
-                        println("❌ AI 처리 오류: Gemini로부터 응답을 받지 못했습니다. (건너뜀)")
-                        return@forEach
-                    }
-
-                    // X 기사는 전담 기자들이므로 AI의 관련성 판별 결과나 AI 성공 여부와 무관하게 저장 시도
-                    if (isTwitter || (geminiResult != null && geminiResult.is_atm_related)) {
-                        val finalTitleKo = geminiResult?.title_ko ?: "뉴스 제목 (번역 대기 중)"
-                        val finalSummaryKo = geminiResult?.summary_ko ?: "핵심 요약 생성 실패" 
-                        val finalContentKo = geminiResult?.content_ko ?: "본문 번역 중 오류가 발생했습니다."
-
-                        println("✅ DB 저장 중: ${finalTitleKo.take(30)}...")
+                    if (geminiResult != null && (isTwitter || geminiResult.is_atm_related)) {
+                        println("✅ 번역 성공! DB 저장 중: ${geminiResult.title_ko?.take(30)}...")
                         aiProcessedCount++
 
                         // 6. Save
                         newsArticleRepository.save(
                             NewsArticle(
+                                articleType = article.articleType,
                                 sourceName = article.sourceName,
+                                authorName = article.authorName,
                                 originalUrl = article.url,
-                                titleKo = finalTitleKo,
-                                summaryKo = finalSummaryKo,
-                                contentKo = finalContentKo, // AI가 준 한국어 번역본만 저장
-                                contentRaw = article.title, // 영어 원문은 여기에만 저장
+                                titleKo = geminiResult.title_ko,
+                                summaryKo = geminiResult.summary_ko,
+                                contentKo = geminiResult.content_ko,
+                                contentRaw = article.title,
                                 imageUrl = article.imageUrl,
                                 isAtmRelated = true,
                                 publishedAt = OffsetDateTime.now()
                             )
                         )
-                    }
- else {
-                        println("⏭️ AI 필터링됨: 관련 없는 소식 (이유: ${geminiResult?.reason})")
+                    } else {
+                        if (geminiResult == null) {
+                            println("❌ AI 번역 실패: DB에 저장하지 않습니다. (건너뜀)")
+                        } else {
+                            println("⏭️ AI 필터링됨: 관련 없는 소식 (이유: ${geminiResult.reason})")
+                        }
                     }
 
                 } else {

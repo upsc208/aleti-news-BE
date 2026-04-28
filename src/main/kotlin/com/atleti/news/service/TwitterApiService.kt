@@ -98,7 +98,9 @@ class TwitterApiService(
                         title = text, // 전체 텍스트 보존
                         url = fullUrl,
                         imageUrl = null,
-                        sourceName = "X (@$username)"
+                        sourceName = "X (@$username)",
+                        articleType = com.atleti.news.entity.ArticleType.SNS_POST,
+                        authorName = username
                     )
                 )
 

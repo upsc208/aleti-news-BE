@@ -50,8 +50,11 @@ class NitterScraperService {
                     title = content.take(100) + if (content.length > 100) "..." else "",
                     url = link,
                     imageUrl = null, // 트위터 이미지는 별도 파싱 필요
-                    sourceName = "Twitter (@\$username)"
+                    sourceName = "Twitter (@$username)",
+                    articleType = com.atleti.news.entity.ArticleType.SNS_POST,
+                    authorName = username
                 )
+
             } else null
         }
     }

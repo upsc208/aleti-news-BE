@@ -11,123 +11,90 @@ import org.springframework.web.reactive.function.client.awaitBody
 
 @Service
 class GeminiService(
-    @Value("\${gemini.api.key}") private val apiKey: String,
+    @Value("\${gemini.api.key}") private val rawApiKey: String,
     private val objectMapper: ObjectMapper
 ) {
+    private val apiKey = rawApiKey.trim()
     private val webClient = WebClient.builder().build()
 
     suspend fun processArticle(title: String, sourceName: String): GeminiResponse? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
-            println("⚠️ 경고: GEMINI_API_KEY가 설정되지 않았습니다.")
+            println("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
             return null
         }
+        
+        // 키가 제대로 로드되었는지 로그로 확인 (앞 4자리, 뒤 4자리)
+        val maskedKey = if (apiKey.length > 10) "${apiKey.take(4)}...${apiKey.takeLast(4)}" else "****"
+        println("DEBUG: 현재 사용 중인 API Key: $maskedKey")
 
-        // 429 방지를 위한 기본 지연
-        delay(6000)
-
-        return callGeminiApi(title, sourceName, retryCount = 0)
+        return callGeminiApi(title, sourceName)
     }
 
-    private suspend fun callGeminiApi(title: String, sourceName: String, retryCount: Int): GeminiResponse? {
-        val isTwitter = sourceName.startsWith("X (@")
-        
-        val prompt = if (isTwitter) {
-            """
-                당신은 스페인 축구 전문 번역가입니다. 
-                다음 트윗 내용은 외국어(영어 또는 스페인어)입니다. 이를 **반드시 한국어로 번역**하여 JSON 형식으로 응답하십시오.
+    private suspend fun callGeminiApi(title: String, sourceName: String, retryCount: Int = 0): GeminiResponse? {
+        // 무료 티어 RPM 제한을 고려한 지연 (15 RPM -> 4초 이상 권장)
+        if (retryCount == 0) delay(4000)
 
-                **수행 과제:**
-                1. 'title_ko': 트윗 내용을 한 줄로 요약한 한국어 제목.
-                2. 'content_ko': 트윗 전체 내용을 가감 없이 매끄러운 한국어로 번역한 전문.
-                3. 'summary_ko': 트윗의 핵심 내용을 3개의 불렛포인트 한국어 문장으로 요약.
-
-                트윗 내용: $title
-                출처: $sourceName
-
-                응답 형식(반드시 이 JSON 구조를 지키고 다른 설명은 하지 마세요):
-                {
-                  "is_atm_related": true,
-                  "reason": "X 기사 자동 승인",
-                  "title_ko": "한국어 요약 제목",
-                  "content_ko": "한국어 번역 전문",
-                  "summary_ko": "1. 요약1\n2. 요약2\n3. 요약3"
-                }
-            """.trimIndent()
-        } else {
-            """
-                당신은 아틀레티코 마드리드 전문 기자입니다. 
-                다음 뉴스가 구단과 관련 있는지 판별하고, 관련 있다면 한국어로 요약/번역하여 JSON으로 응답하십시오.
-                
-                뉴스 제목: $title
-                출처: $sourceName
-
-                응답 형식(JSON):
-                {
-                  "is_atm_related": true/false,
-                  "reason": "판별 이유",
-                  "title_ko": "한국어 번역 제목",
-                  "content_ko": "한국어 번역 전문",
-                  "summary_ko": "1. 요약1\n2. 요약2\n3. 요약3"
-                }
-            """.trimIndent()
-        }
+        val prompt = """
+            You are a professional translator for Atletico Madrid news.
+            Translate the following into Korean and respond ONLY in valid JSON format.
+            Source: $sourceName
+            Text: $title
+            JSON structure:
+            {
+              "is_atm_related": true,
+              "reason": "summary of relation",
+              "title_ko": "translated title",
+              "content_ko": "full translation",
+              "summary_ko": "1. bullet 1\n2. bullet 2\n3. bullet 3"
+            }
+        """.trimIndent()
 
         return try {
             val requestBody = mapOf(
-                "contents" to listOf(
-                    mapOf("parts" to listOf(mapOf("text" to prompt)))
-                )
-                // 호환성 문제 해결을 위해 generationConfig 제거
+                "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
             )
 
-            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=$apiKey"
-            println("DEBUG: Gemini 호출 URL: ${url.replace(apiKey, "HIDDEN_KEY")}")
-
+            // 2026년 기준 가장 안정적이고 할당량이 넉넉할 것으로 예상되는 Stable 모델인 2.5-flash를 사용합니다.
+            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=$apiKey"
+            
             webClient.post()
                 .uri(url)
                 .bodyValue(requestBody)
                 .retrieve()
                 .awaitBody<Map<String, Any>>()
-                .let { 
-                    val result = parseGeminiResponse(it)
-                    if (result != null) {
-                        println("✅ Gemini 번역 성공: ${result.title_ko}")
-                    }
-                    result
-                }
+                .let { parseGeminiResponse(it) }
         } catch (e: WebClientResponseException) {
             if (e.statusCode.value() == 429 && retryCount < 2) {
-                println("⚠️ [Gemini 429] 쿼터 초과. 20초 대기 후 재시도합니다...")
-                delay(20000)
+                val backoff = (retryCount + 1) * 10000L
+                println("⚠️ [Gemini 429] 할당량 초과. ${backoff/1000}초 후 재시도 (${retryCount + 1}/2)...")
+                delay(backoff)
                 return callGeminiApi(title, sourceName, retryCount + 1)
             }
+            
             println("❌ Gemini API HTTP 에러 (${e.statusCode}): ${e.responseBodyAsString}")
+            if (e.statusCode.value() == 404) {
+                println("💡 Tip: 404 에러는 모델 이름이나 API 버전이 잘못되었을 때 발생합니다. gemini-flash-latest 버전을 확인하세요.")
+            }
             null
         } catch (e: Exception) {
-            println("❌ Gemini API 일반 에러: ${e.message}")
+            println("❌ Gemini 일반 에러: ${e.message}")
             null
         }
     }
 
     private fun parseGeminiResponse(response: Map<String, Any>): GeminiResponse? {
-        val candidates = response["candidates"] as? List<*> ?: return null
-        val firstCandidate = candidates.firstOrNull() as? Map<*, *> ?: return null
-        val content = firstCandidate["content"] as? Map<*, *> ?: return null
-        val parts = content["parts"] as? List<*> ?: return null
-        val firstPart = parts.firstOrNull() as? Map<*, *> ?: return null
-        val text = firstPart["text"] as? String ?: return null
-        
-        // JSON 추출 로직 강화 (백틱 제거)
-        val cleanJson = text.trim()
-            .removePrefix("```json")
-            .removePrefix("```")
-            .removeSuffix("```")
-            .trim()
-
         return try {
+            val candidates = response["candidates"] as? List<*> ?: return null
+            val firstCandidate = candidates.firstOrNull() as? Map<*, *> ?: return null
+            val content = firstCandidate["content"] as? Map<*, *> ?: return null
+            val parts = content["parts"] as? List<*> ?: return null
+            val firstPart = parts.firstOrNull() as? Map<*, *> ?: return null
+            val text = (firstPart["text"] as? String)?.trim() ?: return null
+            
+            val cleanJson = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
             objectMapper.readValue<GeminiResponse>(cleanJson)
         } catch (e: Exception) {
-            println("❌ JSON 파싱 에러: ${e.message} (원문: $text)")
+            println("❌ JSON 파싱 실패: ${e.message}")
             null
         }
     }
