@@ -90,20 +90,30 @@ class TwitterApiService(
                 .ifBlank { tweet.optString("id_str") }
                 .ifBlank { tweet.optString("id") }
             
+            // 발행 시간 추출
+            val createdAtStr = tweet.optString("created_at")
+            val publishedAt = try {
+                // Twitter 날짜 형식: "Mon Apr 27 14:55:01 +0000 2026"
+                val formatter = java.time.format.DateTimeFormatter.ofPattern("EEE MMM dd HH:mm:ss Z yyyy", java.util.Locale.ENGLISH)
+                OffsetDateTime.parse(createdAtStr, formatter)
+            } catch (e: Exception) {
+                OffsetDateTime.now()
+            }
+            
             if (text.isNotBlank() && tweetId.isNotBlank()) {
                 val fullUrl = "https://x.com/$username/status/$tweetId"
-                println("DEBUG [Twitter Scraper] Found Tweet: $fullUrl | Text: ${text.take(50)}...")
+                println("DEBUG [Twitter Scraper] Found Tweet: $fullUrl | Time: $publishedAt")
                 articles.add(
                     ScrapedArticle(
-                        title = text, // 전체 텍스트 보존
+                        title = text,
                         url = fullUrl,
                         imageUrl = null,
                         sourceName = "X (@$username)",
                         articleType = com.atleti.news.entity.ArticleType.SNS_POST,
-                        authorName = username
+                        authorName = username,
+                        publishedAt = publishedAt
                     )
                 )
-
             }
         }
         return articles

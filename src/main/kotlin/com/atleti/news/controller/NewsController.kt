@@ -1,5 +1,6 @@
 package com.atleti.news.controller
 
+import com.atleti.news.entity.ArticleType
 import com.atleti.news.entity.CollectionLog
 import com.atleti.news.entity.NewsArticle
 import com.atleti.news.repository.CollectionLogRepository
@@ -11,6 +12,7 @@ import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.web.bind.annotation.*
+import java.time.OffsetDateTime
 
 @Tag(name = "News API", description = "아틀레티코 뉴스 조회 및 관리 API")
 @RestController
@@ -21,14 +23,43 @@ class NewsController(
     private val newsPipelineService: NewsPipelineService
 ) {
 
-    @Operation(summary = "뉴스 목록 조회", description = "최신순으로 페이징된 뉴스 목록을 가져옵니다.")
+    @Operation(summary = "뉴스 목록 조회 (이미지 제외)", description = "이미지 정보를 제외한 가벼운 뉴스 목록을 최신순으로 가져옵니다.")
     @GetMapping
     fun getNews(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "10") size: Int
-    ): Page<NewsArticle> {
+    ): Page<NewsListResponse> {
         val pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending())
-        return newsArticleRepository.findAll(pageable)
+        return newsArticleRepository.findAll(pageable).map { 
+            NewsListResponse(
+                id = it.id!!,
+                titleKo = it.titleKo,
+                sourceName = it.sourceName,
+                publishedAt = it.publishedAt,
+                articleType = it.articleType,
+                summaryKo = it.summaryKo
+            )
+        }
+    }
+
+    @Operation(summary = "뉴스 상세 조회 (전체 포함)", description = "특정 기사의 상세 정보(이미지, 본문 포함)를 가져옵니다.")
+    @GetMapping("/{id}")
+    fun getNewsDetail(@PathVariable id: Long): NewsDetailResponse {
+        val article = newsArticleRepository.findById(id)
+            .orElseThrow { NoSuchElementException("해당 기사를 찾을 수 없습니다. ID: $id") }
+        
+        return NewsDetailResponse(
+            id = article.id!!,
+            titleKo = article.titleKo,
+            summaryKo = article.summaryKo,
+            contentKo = article.contentKo,
+            imageUrl = article.imageUrl,
+            sourceName = article.sourceName,
+            authorName = article.authorName,
+            originalUrl = article.originalUrl,
+            publishedAt = article.publishedAt,
+            articleType = article.articleType
+        )
     }
 
     @Operation(summary = "수집 로그 조회", description = "뉴스 수집 배치 실행 기록을 확인합니다.")
@@ -47,3 +78,31 @@ class NewsController(
         newsPipelineService.runPipeline()
     }
 }
+
+/**
+ * 목록 조회용 응답 DTO (이미지 URL 제외)
+ */
+data class NewsListResponse(
+    val id: Long,
+    val titleKo: String?,
+    val sourceName: String,
+    val publishedAt: OffsetDateTime?,
+    val articleType: ArticleType,
+    val summaryKo: String?
+)
+
+/**
+ * 상세 조회용 응답 DTO (모든 정보 포함)
+ */
+data class NewsDetailResponse(
+    val id: Long,
+    val titleKo: String?,
+    val summaryKo: String?,
+    val contentKo: String?,
+    val imageUrl: String?,
+    val sourceName: String,
+    val authorName: String?,
+    val originalUrl: String,
+    val publishedAt: OffsetDateTime?,
+    val articleType: ArticleType
+)

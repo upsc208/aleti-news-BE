@@ -17,7 +17,7 @@ class GeminiService(
     private val apiKey = rawApiKey.trim()
     private val webClient = WebClient.builder().build()
 
-    suspend fun processArticle(title: String, sourceName: String): GeminiResponse? {
+    suspend fun processArticle(title: String, fullContent: String, sourceName: String): GeminiResponse? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
             println("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
             return null
@@ -27,25 +27,33 @@ class GeminiService(
         val maskedKey = if (apiKey.length > 10) "${apiKey.take(4)}...${apiKey.takeLast(4)}" else "****"
         println("DEBUG: 현재 사용 중인 API Key: $maskedKey")
 
-        return callGeminiApi(title, sourceName)
+        return callGeminiApi(title, fullContent, sourceName)
     }
 
-    private suspend fun callGeminiApi(title: String, sourceName: String, retryCount: Int = 0): GeminiResponse? {
-        // 무료 티어 RPM 제한을 고려한 지연 (15 RPM -> 4초 이상 권장)
-        if (retryCount == 0) delay(4000)
+    private suspend fun callGeminiApi(title: String, fullContent: String, sourceName: String, retryCount: Int = 0): GeminiResponse? {
+        // 유료 티어는 RPM이 넉넉하므로 지연 시간을 1초로 단축합니다.
+        if (retryCount == 0) delay(1000)
 
         val prompt = """
             You are a professional translator for Atletico Madrid news.
-            Translate the following into Korean and respond ONLY in valid JSON format.
-            Source: $sourceName
-            Text: $title
+            Translate the following news article into Korean and respond ONLY in valid JSON format.
+            
+            [Source]
+            $sourceName
+            
+            [Title]
+            $title
+            
+            [Full Content]
+            $fullContent
+            
             JSON structure:
             {
               "is_atm_related": true,
               "reason": "summary of relation",
               "title_ko": "translated title",
-              "content_ko": "full translation",
-              "summary_ko": "1. bullet 1\n2. bullet 2\n3. bullet 3"
+              "content_ko": "full body translation in Korean (keep paragraphs)",
+              "summary_ko": "Strictly 3 bullet points in Korean. format: 1. ...\n2. ...\n3. ..."
             }
         """.trimIndent()
 
@@ -68,7 +76,7 @@ class GeminiService(
                 val backoff = (retryCount + 1) * 10000L
                 println("⚠️ [Gemini 429] 할당량 초과. ${backoff/1000}초 후 재시도 (${retryCount + 1}/2)...")
                 delay(backoff)
-                return callGeminiApi(title, sourceName, retryCount + 1)
+                return callGeminiApi(title, fullContent, sourceName, retryCount + 1)
             }
             
             println("❌ Gemini API HTTP 에러 (${e.statusCode}): ${e.responseBodyAsString}")

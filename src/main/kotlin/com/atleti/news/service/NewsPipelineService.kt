@@ -64,10 +64,13 @@ class NewsPipelineService(
                 kotlinx.coroutines.delay(2000)
             }
 
+            // [추가] 발행 시간 기준 오름차순 정렬 (오래된 소식부터 순서대로 처리)
+            val sortedArticles = articles.sortedBy { it.publishedAt }
+            println("📊 전체 ${sortedArticles.size}개 기사를 시간순(FIFO)으로 정렬했습니다.")
 
-            scannedCount = articles.size
+            scannedCount = sortedArticles.size
 
-            articles.forEach { article ->
+            sortedArticles.forEach { article ->
                 // 3. Duplicate Check
                 if (!newsArticleRepository.existsByOriginalUrl(article.url)) {
                     
@@ -86,7 +89,16 @@ class NewsPipelineService(
 
                     // 5. AI Processing
                     println("🤖 AI 분석 시작: ${article.title.take(40)}... (출처: ${article.sourceName})")
-                    val geminiResult = geminiService.processArticle(article.title, article.sourceName)
+                    
+                    // 마르카 기사인 경우 본문 및 기자 이름 추가 수집
+                    val (fullContent, actualAuthor) = if (article.sourceName == "Marca") {
+                        val detail = scraperService.fetchFullContent(article.url)
+                        detail.content to detail.authorName
+                    } else {
+                        article.title to (article.authorName ?: "Unknown") // 트위터는 제목이 곧 본문
+                    }
+
+                    val geminiResult = geminiService.processArticle(article.title, fullContent, article.sourceName)
                     
                     if (geminiResult != null && (isTwitter || geminiResult.is_atm_related)) {
                         println("✅ 번역 성공! DB 저장 중: ${geminiResult.title_ko?.take(30)}...")
@@ -97,12 +109,12 @@ class NewsPipelineService(
                             NewsArticle(
                                 articleType = article.articleType,
                                 sourceName = article.sourceName,
-                                authorName = article.authorName,
+                                authorName = actualAuthor, // 이제 실제 기자 이름이 들어갑니다.
                                 originalUrl = article.url,
                                 titleKo = geminiResult.title_ko,
                                 summaryKo = geminiResult.summary_ko,
                                 contentKo = geminiResult.content_ko,
-                                contentRaw = article.title,
+                                contentRaw = fullContent, // 이제 여기에 원문 전체가 들어갑니다.
                                 imageUrl = article.imageUrl,
                                 isAtmRelated = true,
                                 publishedAt = OffsetDateTime.now()
