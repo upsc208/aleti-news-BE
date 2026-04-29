@@ -19,18 +19,27 @@ import java.time.OffsetDateTime
 @RequestMapping("/api/news")
 class NewsController(
     private val newsArticleRepository: NewsArticleRepository,
+    private val newsSourceRepository: com.atleti.news.repository.NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
     private val newsPipelineService: NewsPipelineService
 ) {
 
-    @Operation(summary = "뉴스 목록 조회 (이미지 제외)", description = "이미지 정보를 제외한 가벼운 뉴스 목록을 최신순으로 가져옵니다.")
+    @Operation(summary = "뉴스 목록 조회 (필터링 포함)", description = "이미지 정보를 제외한 가벼운 뉴스 목록을 가져옵니다. 소스 ID 리스트로 필터링이 가능합니다.")
     @GetMapping
     fun getNews(
         @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "10") size: Int
+        @RequestParam(defaultValue = "10") size: Int,
+        @RequestParam(required = false) sources: List<String>?
     ): Page<NewsListResponse> {
         val pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending())
-        return newsArticleRepository.findAll(pageable).map { 
+        
+        val articles = if (sources.isNullOrEmpty()) {
+            newsArticleRepository.findAll(pageable)
+        } else {
+            newsArticleRepository.findAllBySourceNameIn(sources, pageable)
+        }
+
+        return articles.map { 
             NewsListResponse(
                 id = it.id!!,
                 titleKo = it.titleKo,
@@ -40,6 +49,12 @@ class NewsController(
                 summaryKo = it.summaryKo
             )
         }
+    }
+
+    @Operation(summary = "수집 소스 목록 조회", description = "시스템에서 관리 중인 모든 뉴스 수집원 리스트를 가져옵니다.")
+    @GetMapping("/sources")
+    fun getSources(): List<com.atleti.news.entity.NewsSource> {
+        return newsSourceRepository.findAllByIsActiveTrue()
     }
 
     @Operation(summary = "뉴스 상세 조회 (전체 포함)", description = "특정 기사의 상세 정보(이미지, 본문 포함)를 가져옵니다.")

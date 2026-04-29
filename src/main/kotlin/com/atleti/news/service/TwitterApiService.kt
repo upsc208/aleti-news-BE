@@ -108,7 +108,7 @@ class TwitterApiService(
                         title = text,
                         url = fullUrl,
                         imageUrl = null,
-                        sourceName = "X (@$username)",
+                        sourceName = username,
                         articleType = com.atleti.news.entity.ArticleType.SNS_POST,
                         authorName = username,
                         publishedAt = publishedAt

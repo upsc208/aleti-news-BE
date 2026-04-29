@@ -36,7 +36,7 @@ class GeminiService(
 
         val prompt = """
             You are a professional translator for Atletico Madrid news.
-            Translate the following news article into Korean and respond ONLY in valid JSON format.
+            Analyze the following article and respond ONLY in valid JSON.
             
             [Source]
             $sourceName
@@ -62,8 +62,8 @@ class GeminiService(
                 "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
             )
 
-            // 2026년 기준 가장 안정적이고 할당량이 넉넉할 것으로 예상되는 Stable 모델인 2.5-flash를 사용합니다.
-            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=$apiKey"
+            // 비용 효율이 가장 뛰어난 Gemini 2.0 Flash Lite 모델을 사용합니다.
+            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite-preview-02-05:generateContent?key=$apiKey"
             
             webClient.post()
                 .uri(url)
