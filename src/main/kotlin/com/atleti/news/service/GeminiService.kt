@@ -62,8 +62,8 @@ class GeminiService(
                 "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
             )
 
-            // 비용 효율이 가장 뛰어난 Gemini 2.0 Flash Lite 모델을 사용합니다.
-            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite-preview-02-05:generateContent?key=$apiKey"
+            // 비용 효율이 가장 뛰어난 Gemini 2.5 Flash Lite 모델을 사용합니다.
+            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
             
             webClient.post()
                 .uri(url)

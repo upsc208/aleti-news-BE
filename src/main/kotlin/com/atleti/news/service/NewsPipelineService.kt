@@ -22,7 +22,12 @@ class NewsPipelineService(
 ) {
     private val keywords = keywordString.split(",").map { it.trim().lowercase() }
 
-    @Scheduled(fixedRate = 15 * 60 * 1000) // 15분마다 실행
+    @Scheduled(cron = "0 0/15 9-23 * * *", zone = "Europe/Madrid") // 스페인 시간 09:00~23:45 사이 15분마다
+    fun scheduledFastPipeline() = runPipeline()
+
+    @Scheduled(cron = "0 0 0-8 * * *", zone = "Europe/Madrid") // 스페인 시간 00:00~08:00 사이 1시간마다
+    fun scheduledSlowPipeline() = runPipeline()
+
     fun runPipeline() = runBlocking {
         var scannedCount = 0
         var aiProcessedCount = 0

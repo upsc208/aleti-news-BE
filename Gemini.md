@@ -36,7 +36,7 @@ AI 큐레이션: 단순 번역을 넘어, Gemini AI가 아틀레티코와 관련
 - **언어**: Kotlin 1.9+ (Idiomatic Kotlin 지향)
 - **프레임워크**: Spring Boot 3.2+
 - **비동기 처리**: Kotlin Coroutines (Scraping 시 Non-blocking I/O 구현)
-- **AI 엔진**: Google Gemini 1.5 Flash API (Google AI Java SDK 활용)
+- **AI 엔진**: Google Gemini 2.5 Flash Lite API (Google AI Java SDK 활용)
 - **데이터베이스**: PostgreSQL (Supabase) / Spring Data JPA
 - **크롤링**: Jsoup
 
@@ -59,7 +59,7 @@ AI 큐레이션: 단순 번역을 넘어, Gemini AI가 아틀레티코와 관련
 2. **필터링(Filtering)**:
     - **1단계 (중복 제거)**: DB에 `original_url` 존재 시 즉시 제외.
     - **2단계 (키워드 검사)**: 정규표현식으로 핵심 키워드 체크하여 AI 호출 전 1차 선별 (비용 절감).
-3. **AI 처리(AI Processing)**: **Gemini 1.5 Flash** 호출.
+3. **AI 처리(AI Processing)**: **Gemini 2.5 Flash Lite** 호출.
     - **작업 A**: 아틀레티코 마드리드 관련성 최종 판별 (True/False).
     - **작업 B**: 관련성 확인 시, 3줄 불렛포인트 한국어 요약 및 번역 생성.
 4. **저장(Storage)**: 최종 가공 데이터를 DB에 저장하고 배치 실행 결과 기록.
