@@ -23,6 +23,9 @@ class CollectionLog(
     @Column(name = "twitter_api_call_count")
     val twitterApiCallCount: Int = 0,
 
+    @Column(name = "football_api_call_count")
+    val footballApiCallCount: Int = 0,
+
     @Column(name = "error_msg", columnDefinition = "TEXT")
     val errorMsg: String? = null,
 

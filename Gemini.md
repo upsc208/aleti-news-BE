@@ -34,35 +34,27 @@ AI 큐레이션: 단순 번역을 넘어, Gemini AI가 아틀레티코와 관련
 
 ## 2. 기술 스택 (Tech Stack)
 - **언어**: Kotlin 1.9+ (Idiomatic Kotlin 지향)
-- **프레임워크**: Spring Boot 3.2+
-- **비동기 처리**: Kotlin Coroutines (Scraping 시 Non-blocking I/O 구현)
+- **프레임워크**: Spring Boot 3.4+
+- **비동기 처리**: Kotlin Coroutines (Scraping 및 API 호출 시 Non-blocking I/O 구현)
 - **AI 엔진**: Google Gemini 2.5 Flash Lite API (Google AI Java SDK 활용)
 - **데이터베이스**: PostgreSQL (Supabase) / Spring Data JPA
+- **데이터 API**: RapidAPI (Twitter API, Free API Live Football Data)
 - **크롤링**: Jsoup
 
 ## 3. 데이터베이스 스키마 (PostgreSQL)
-### 3.1 news_article (뉴스 본문)
-- `id` (BIGSERIAL PK)
-- `source_name` (VARCHAR): 출처명 (Marca, Nitter 등)
-- `original_url` (VARCHAR): 원문 주소 (**UNIQUE INDEX** - 중복 수집 방지 핵심)
-- `title_ko` (TEXT): 한글 제목
-- `summary_ko` (TEXT): Gemini AI가 생성한 3줄 요약
-- `image_url` (TEXT): 대표 이미지 경로
-- `published_at` (TIMESTAMPTZ): 발행 일시
-- `is_atm_related` (BOOLEAN): ATM 관련 여부 판별값
-
-### 3.2 collection_log (수집 로그)
-- `id`, `status` (SUCCESS/FAIL), `scanned_count`, `ai_processed_count`, `error_msg`, `execution_time_ms`, `created_at`
-
-## 4. 기능적 워크플로우 (15분 주기 배치)
-1. **수집(Scraping)**: Marca(ATM 섹션) 및 Nitter(Matteo Moretto 등 1티어 기자) 데이터 획득.
+---
+(중략)
+---
+## 4. 기능적 워크플로우 (주기적 배치 및 실시간 조회)
+1. **수집(Scraping)**: Marca(ATM 섹션) 및 Twitter(주요 기자) 데이터 획득. (09-24시: 15분 간격, 00-08시: 1시간 간격)
 2. **필터링(Filtering)**:
     - **1단계 (중복 제거)**: DB에 `original_url` 존재 시 즉시 제외.
-    - **2단계 (키워드 검사)**: 정규표현식으로 핵심 키워드 체크하여 AI 호출 전 1차 선별 (비용 절감).
+    - **2단계 (키워드 검사)**: 정규표현식으로 핵심 키워드 체크하여 AI 호출 전 1차 선별.
 3. **AI 처리(AI Processing)**: **Gemini 2.5 Flash Lite** 호출.
-    - **작업 A**: 아틀레티코 마드리드 관련성 최종 판별 (True/False).
+    - **작업 A**: 아틀레티코 마드리드 관련성 최종 판별.
     - **작업 B**: 관련성 확인 시, 3줄 불렛포인트 한국어 요약 및 번역 생성.
-4. **저장(Storage)**: 최종 가공 데이터를 DB에 저장하고 배치 실행 결과 기록.
+4. **저장(Storage)**: 최종 가공 데이터를 DB에 저장.
+5. **경기 정보 조회(Match Status)**: 'Free API Live Football Data'를 통해 최근 경기 결과(스코어, 득점자, 대회명) 및 향후 3경기 일정을 실시간 제공.
 
 ## 5. 비기능적 요구사항 (금융 SI급 표준)
 - **회복 탄력성(Resilience)**: Nitter 인스턴스 Fail-over 구현. 특정 도메인(nitter.net) 응답 없을 시 백업 도메인(nitter.it, nitter.cz 등)으로 자동 전환.

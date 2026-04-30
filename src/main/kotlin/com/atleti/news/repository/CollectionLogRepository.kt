@@ -10,4 +10,7 @@ import java.time.OffsetDateTime
 interface CollectionLogRepository : JpaRepository<CollectionLog, Long> {
     @Query("SELECT SUM(c.twitterApiCallCount) FROM CollectionLog c WHERE c.createdAt >= :startOfDay")
     fun sumTwitterApiCallCountSince(startOfDay: OffsetDateTime): Long?
+
+    @Query("SELECT SUM(c.footballApiCallCount) FROM CollectionLog c WHERE c.createdAt >= :since")
+    fun sumFootballApiCallCountSince(since: OffsetDateTime): Long?
 }
