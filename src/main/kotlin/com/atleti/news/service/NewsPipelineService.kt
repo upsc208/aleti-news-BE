@@ -48,14 +48,18 @@ class NewsPipelineService(
             )
             
             for (username in journalists) {
-                println("🔍 Twitter(RapidAPI) 수집 시도 중: @$username")
+                println("🔍 Twitter 수집 시도 중: @$username")
 
                 val currentUsage = twitterApiService.getTodayApiUsage()
+                var tweets = emptyList<ScrapedArticle>()
+                var usedApi = false
+
+                // 1단계: RapidAPI 시도 (한도 내일 경우)
                 if (currentUsage + twitterApiCallCount < 45) {
                     try {
-                        val tweets = twitterApiService.getTweets(username)
+                        tweets = twitterApiService.getTweets(username)
                         if (tweets.isNotEmpty()) {
-                            articles.addAll(tweets)
+                            usedApi = true
                             twitterApiCallCount++
                             println("✅ [RapidAPI] @$username 에서 ${tweets.size}개의 트윗을 가져왔습니다.")
                         }
@@ -63,7 +67,24 @@ class NewsPipelineService(
                         println("❌ [RapidAPI] @$username 수집 중 오류: ${e.message}")
                     }
                 } else {
-                    println("⏭️ 오늘 호출 제한 도달: @$username 스킵")
+                    println("⏭️ [RapidAPI] 오늘 호출 제한 도달: @$username 스킵 후 Nitter로 전환")
+                }
+
+                // 2단계: Fail-over (API 실패하거나 한도 초과 시 Nitter 사용)
+                if (tweets.isEmpty()) {
+                    println("🔄 [Fail-over] Nitter를 통해 @$username 수집 시도...")
+                    try {
+                        tweets = nitterScraperService.scrapeJournalist(username)
+                        if (tweets.isNotEmpty()) {
+                            println("✅ [Nitter] @$username 에서 ${tweets.size}개의 트윗을 가져왔습니다.")
+                        }
+                    } catch (e: Exception) {
+                        println("❌ [Nitter] @$username 수집 중 오류: ${e.message}")
+                    }
+                }
+
+                if (tweets.isNotEmpty()) {
+                    articles.addAll(tweets)
                 }
 
                 kotlinx.coroutines.delay(2000)

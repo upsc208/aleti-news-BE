@@ -86,9 +86,9 @@ class TwitterApiService(
             val text = tweet.optString("text") ?: tweet.optString("full_text") ?: ""
             
             // 다양한 ID 필드 확인
-            val tweetId = tweet.optString("tweet_id")
-                .ifBlank { tweet.optString("id_str") }
-                .ifBlank { tweet.optString("id") }
+            val tweetId = tweet.optString("tweet_id").takeIf { it.isNotBlank() }
+                ?: tweet.optString("id_str").takeIf { it.isNotBlank() }
+                ?: tweet.optString("id")
             
             // 발행 시간 추출
             val createdAtStr = tweet.optString("created_at")

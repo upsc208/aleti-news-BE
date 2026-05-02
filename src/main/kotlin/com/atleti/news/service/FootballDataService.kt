@@ -2,18 +2,24 @@ package com.atleti.news.service
 
 import com.atleti.news.entity.CollectionLog
 import com.atleti.news.entity.CollectionStatus
+import com.atleti.news.entity.MatchResult
+import com.atleti.news.entity.UpcomingMatchEntity
 import com.atleti.news.repository.CollectionLogRepository
+import com.atleti.news.repository.MatchResultRepository
+import com.atleti.news.repository.UpcomingMatchRepository
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.reactor.awaitSingle
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
+import org.springframework.web.reactive.function.client.ExchangeStrategies
 import org.springframework.web.reactive.function.client.WebClient
 import java.time.Instant
 import java.time.LocalDate
-import java.time.OffsetDateTime
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -22,235 +28,252 @@ class FootballDataService(
     @Value("\${rapidapi.key}") private val apiKey: String,
     @Value("\${rapidapi.football.host}") private val apiHost: String,
     private val objectMapper: ObjectMapper,
-    private val collectionLogRepository: CollectionLogRepository
+    private val collectionLogRepository: CollectionLogRepository,
+    private val matchResultRepository: MatchResultRepository,
+    private val upcomingMatchRepository: UpcomingMatchRepository
 ) {
     private val webClient = WebClient.builder()
         .baseUrl("https://$apiHost")
+        .exchangeStrategies(ExchangeStrategies.builder()
+            .codecs { it.defaultCodecs().maxInMemorySize(10 * 1024 * 1024) }
+            .build())
         .defaultHeader("X-RapidAPI-Key", apiKey)
         .defaultHeader("X-RapidAPI-Host", apiHost)
         .build()
 
     private val SEARCH_QUERY = "Atletico Madrid"
+    private val ATLETI_TEAM_ID = "9906"
     private var cachedResponse: MatchStatusResponse? = null
 
     suspend fun getRecentMatch(): RecentMatch? {
-        if (cachedResponse == null) updateMatchStatus()
+        if (cachedResponse == null || cachedResponse?.recentResult == null) loadFromDbOrUpdate()
         return cachedResponse?.recentResult
     }
 
     suspend fun getUpcomingMatches(): List<UpcomingMatch> {
-        if (cachedResponse == null) updateMatchStatus()
+        if (cachedResponse == null || (cachedResponse?.upcomingMatches?.isEmpty() == true)) loadFromDbOrUpdate()
         return cachedResponse?.upcomingMatches ?: emptyList()
     }
 
-    @Scheduled(cron = "0 30 1,6 * * *", zone = "Asia/Seoul")
+    private suspend fun loadFromDbOrUpdate() {
+        // [Cleanup] 잘못 저장된 타 팀 경기 삭제
+        val allResults = matchResultRepository.findAll()
+        val wrongResults = allResults.filter { it.homeTeam.contains("Nacional") || it.awayTeam.contains("Nacional") }
+        if (wrongResults.isNotEmpty()) {
+            println("🧹 [Match DB] Removing ${wrongResults.size} incorrect match results from DB.")
+            matchResultRepository.deleteAll(wrongResults)
+        }
+
+        // 1. 최근 경기 결과 로드
+        val latestDbMatch = matchResultRepository.findTopByOrderByMatchDateDesc()
+        var recentResult: RecentMatch? = null
+        if (latestDbMatch != null) {
+            val scorers = try {
+                objectMapper.readValue(latestDbMatch.scorersJson, objectMapper.typeFactory.constructCollectionType(List::class.java, Scorer::class.java))
+            } catch (e: Exception) { emptyList<Scorer>() }
+
+            recentResult = RecentMatch(
+                matchId = latestDbMatch.matchId,
+                homeTeam = latestDbMatch.homeTeam,
+                awayTeam = latestDbMatch.awayTeam,
+                homeScore = latestDbMatch.homeScore,
+                awayScore = latestDbMatch.awayScore,
+                scorers = scorers,
+                matchDate = latestDbMatch.matchDate,
+                isHome = latestDbMatch.isHome,
+                tournament = latestDbMatch.tournament
+            )
+        }
+
+        // 2. 향후 일정 로드
+        val dbUpcoming = upcomingMatchRepository.findAllByOrderByMatchDateAsc()
+        val upcomingList = dbUpcoming.map { 
+            UpcomingMatch(it.opponent, it.matchDate, it.isHome, it.tournament)
+        }
+
+        cachedResponse = MatchStatusResponse(recentResult, upcomingList)
+        println("💾 [Match DB] Loaded from database. Result: ${recentResult?.homeTeam ?: "None"} / Upcoming: ${upcomingList.size}건")
+        
+        // 업데이트 여부 판단 (24시간 경과 또는 데이터 부재)
+        val isResultOld = latestDbMatch == null || latestDbMatch.updatedAt.isBefore(LocalDateTime.now().minusHours(24))
+        val isUpcomingMissing = upcomingList.isEmpty()
+        
+        if (isResultOld || isUpcomingMissing) {
+            println("🔄 [Football API] Data is missing or old. Triggering API update...")
+            updateMatchStatus()
+        } else {
+            println("✅ [Football API] DB data is fresh. Skipping API call.")
+        }
+    }
+
+    @Scheduled(cron = "0 0 6 * * *", zone = "Asia/Seoul")
     fun scheduledUpdate() = runBlocking {
-        println("🕒 [Football API] 정기 업데이트 시작...")
+        println("⏰ [Football API] Scheduled daily update started.")
         updateMatchStatus()
     }
 
     private suspend fun updateMatchStatus() {
         val startOfMonth = LocalDate.now().withDayOfMonth(1).atStartOfDay().atOffset(java.time.ZoneOffset.UTC)
         val monthlyUsage = collectionLogRepository.sumFootballApiCallCountSince(startOfMonth) ?: 0
-        if (monthlyUsage >= 95) return
+        if (monthlyUsage >= 95) {
+            println("⚠️ [Football API] Monthly limit reached.")
+            return
+        }
 
         var apiCallCount = 0
         val startTime = System.currentTimeMillis()
 
         try {
-            // 사용자 확인 결과: /football-matches-search 엔드포인트 사용
-            val response = webClient.get()
-                .uri("/football-matches-search?search=$SEARCH_QUERY")
-                .retrieve()
-                .bodyToMono(JsonNode::class.java)
-                .awaitSingle()
+            var newRecentMatch: RecentMatch? = null
+            val dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
             
-            apiCallCount++
-
-            // 응답 구조: response.suggestions
-            val suggestions = response.path("response").path("suggestions")
-            if (!suggestions.isArray) {
-                println("⚠️ [Football API] 유효한 검색 결과가 없습니다.")
-                return
-            }
-
-            val finishedMatches = mutableListOf<JsonNode>()
-            val upcomingMatches = mutableListOf<JsonNode>()
-
-            for (match in suggestions) {
-                if (match.path("type").asText() != "match") continue
-
-                val homeName = match.path("homeTeamName").asText().lowercase()
-                val awayName = match.path("awayTeamName").asText().lowercase()
+            // 1. 최근 경기 결과 수집
+            for (i in 0..2) {
+                val dateStr = LocalDate.now().minusDays(i.toLong()).format(dateFormatter)
+                val url = "/football-get-matches-by-date?date=$dateStr"
                 
-                // 검색 결과 중 진짜 아틀레티코 경기만 필터링
-                if (!homeName.contains("atletico madrid") && !awayName.contains("atletico madrid")) continue
-
-                // 수정: finished 필드는 status 객체 내부에 있음
-                val isFinished = match.path("status").path("finished").asBoolean()
-                if (isFinished) {
-                    finishedMatches.add(match)
-                } else {
-                    upcomingMatches.add(match)
-                }
-            }
-
-            // 최근 경기 처리
-            val recentMatchNode = finishedMatches.maxByOrNull { 
-                // status.utcTime 또는 matchDate 사용
-                it.path("status").path("utcTime").asText().ifBlank { it.path("matchDate").asText() } 
-            }
-            val recentMatch = recentMatchNode?.let { node ->
-                val matchId = node.path("id").asText()
-                val timeStr = node.path("status").path("utcTime").asText().ifBlank { node.path("matchDate").asText() }
+                val rawResponse = try {
+                    delay(2000)
+                    webClient.get().uri(url).retrieve().bodyToMono(String::class.java).awaitSingle()
+                } catch (e: Exception) { null }
                 
-                val scorers = if (cachedResponse?.recentResult?.matchId == matchId) {
-                    cachedResponse!!.recentResult!!.scorers
-                } else {
-                    try {
-                        apiCallCount++
-                        fetchScorers(matchId)
-                    } catch (e: Exception) {
-                        emptyList()
+                apiCallCount++
+                if (rawResponse == null) continue
+                
+                val dateResponse = objectMapper.readTree(rawResponse)
+                val matches = dateResponse.at("/response/matches")
+
+                if (matches.isArray && matches.size() > 0) {
+                    val atletiMatch = matches.find { node ->
+                        val hName = (node.at("/home/longName").asText().takeIf { it.isNotBlank() } ?: node.at("/home/name").asText()).lowercase()
+                        val aName = (node.at("/away/longName").asText().takeIf { it.isNotBlank() } ?: node.at("/away/name").asText()).lowercase()
+                        val hId = node.at("/home/id").asText()
+                        val aId = node.at("/away/id").asText()
+                        
+                        val isAtleti = hId == ATLETI_TEAM_ID || aId == ATLETI_TEAM_ID || 
+                                     (hName.contains("atletico madrid") || aName.contains("atletico madrid")) ||
+                                     ((hName == "atletico" || hName == "atleti") && !hName.contains("nacional") && !hName.contains("mineiro"))
+                        
+                        isAtleti && node.at("/status/finished").asBoolean()
+                    }
+                    
+                    if (atletiMatch != null) {
+                        val matchId = atletiMatch.at("/id").asText()
+                        val scorers = try { apiCallCount++; fetchScorers(matchId) } catch (e: Exception) { emptyList() }
+                        val finalHName = atletiMatch.at("/home/longName").asText().takeIf { it.isNotBlank() } ?: atletiMatch.at("/home/name").asText()
+                        val finalAName = atletiMatch.at("/away/longName").asText().takeIf { it.isNotBlank() } ?: atletiMatch.at("/away/name").asText()
+
+                        newRecentMatch = RecentMatch(
+                            matchId = matchId,
+                            homeTeam = finalHName,
+                            awayTeam = finalAName,
+                            homeScore = atletiMatch.at("/home/score").asInt(),
+                            awayScore = atletiMatch.at("/away/score").asInt(),
+                            scorers = scorers,
+                            matchDate = atletiMatch.at("/status/utcTime").asText().takeIf { it.isNotBlank() } ?: dateStr,
+                            isHome = atletiMatch.at("/home/id").asText() == ATLETI_TEAM_ID || finalHName.lowercase().contains("atletico"),
+                            tournament = atletiMatch.at("/leagueName").asText().takeIf { it.isNotBlank() } ?: "Tournament"
+                        )
+
+                        // Final Safety Check
+                        if (newRecentMatch.homeTeam.contains("Madrid") || newRecentMatch.awayTeam.contains("Madrid") || atletiMatch.at("/home/id").asText() == ATLETI_TEAM_ID) {
+                            matchResultRepository.save(MatchResult(
+                                matchId = newRecentMatch.matchId,
+                                homeTeam = newRecentMatch.homeTeam,
+                                awayTeam = newRecentMatch.awayTeam,
+                                homeScore = newRecentMatch.homeScore,
+                                awayScore = newRecentMatch.awayScore,
+                                scorersJson = objectMapper.writeValueAsString(scorers),
+                                matchDate = newRecentMatch.matchDate,
+                                tournament = newRecentMatch.tournament,
+                                isHome = newRecentMatch.isHome
+                            ))
+                            break
+                        }
                     }
                 }
-                
-                val scoreRaw = node.path("score").asText()
-                val (homeScore, awayScore) = if (scoreRaw.contains("-")) {
-                    val parts = scoreRaw.split("-").map { it.trim().toIntOrNull() ?: 0 }
-                    parts.getOrElse(0) { 0 } to parts.getOrElse(1) { 0 }
-                } else {
-                    0 to 0 
-                }
-                
-                RecentMatch(
-                    matchId = matchId,
-                    homeTeam = node.path("homeTeamName").asText(),
-                    awayTeam = node.path("awayTeamName").asText(),
-                    homeScore = homeScore,
-                    awayScore = awayScore,
-                    scorers = scorers,
-                    matchDate = formatUtcTime(timeStr),
-                    isHome = node.path("homeTeamName").asText().contains("Atletico Madrid", true),
-                    tournament = node.path("leagueName").asText()
-                )
             }
 
-            // 다가올 경기 처리 (현재 시간 이후의 경기만 필터링)
-            val nowUtc = Instant.now()
-            val upcoming = upcomingMatches
-                .filter { 
-                    try {
-                        val timeStr = it.path("status").path("utcTime").asText().ifBlank { it.path("matchDate").asText() }
-                        Instant.parse(timeStr).isAfter(nowUtc)
-                    } catch (e: Exception) {
-                        false
+            // 2. 향후 일정 수집 (Search)
+            val upcomingMatches = mutableListOf<UpcomingMatch>()
+            try {
+                delay(2000)
+                val rawSearchResponse = webClient.get().uri("/football-matches-search?search=$SEARCH_QUERY").retrieve().bodyToMono(String::class.java).awaitSingle()
+                val searchResponse = objectMapper.readTree(rawSearchResponse)
+                apiCallCount++
+                
+                val suggestions = searchResponse.path("response").path("suggestions")
+                if (suggestions.isArray) {
+                    val now = Instant.now()
+                    val sortedUpcoming = suggestions.filter { node ->
+                        val hName = node.path("homeTeamName").asText().lowercase()
+                        val aName = node.path("awayTeamName").asText().lowercase()
+                        val combinedName = hName + " " + aName
+                        val isFinished = node.at("/status/finished").asBoolean()
+                        val timeStr = node.at("/status/utcTime").asText().takeIf { it.isNotBlank() } ?: node.path("matchDate").asText()
+                        
+                        val isAtleti = combinedName.contains("atletico") || combinedName.contains("atleti") || combinedName.contains("atm")
+                        val isNotOther = !combinedName.contains("nacional") && !combinedName.contains("mineiro")
+                        
+                        isAtleti && isNotOther && !isFinished && try { Instant.parse(timeStr).isAfter(now.minusSeconds(3600)) } catch (e: Exception) { false }
+                    }.sortedBy { it.at("/status/utcTime").asText().takeIf { it.isNotBlank() } ?: it.path("matchDate").asText() }.take(3)
+                    
+                    // DB 저장 전 기존 일정 초기화
+                    upcomingMatchRepository.deleteAll()
+                    
+                    for (node in sortedUpcoming) {
+                        val hName = node.path("homeTeamName").asText()
+                        val aName = node.path("awayTeamName").asText()
+                        val isAtletiHome = hName.lowercase().contains("atletico") || hName.lowercase().contains("atleti")
+                        val matchDateStr = node.at("/status/utcTime").asText().takeIf { it.isNotBlank() } ?: node.path("matchDate").asText()
+                        val tournamentStr = node.path("leagueName").asText().takeIf { it.isNotBlank() } ?: "Tournament"
+                        
+                        val entity = UpcomingMatchEntity(
+                            opponent = if (isAtletiHome) aName else hName,
+                            matchDate = matchDateStr,
+                            isHome = isAtletiHome,
+                            tournament = tournamentStr
+                        )
+                        upcomingMatchRepository.save(entity)
+                        
+                        upcomingMatches.add(UpcomingMatch(entity.opponent, entity.matchDate, entity.isHome, entity.tournament))
                     }
                 }
-                .sortedBy { it.path("status").path("utcTime").asText().ifBlank { it.path("matchDate").asText() } }
-                .take(3)
-                .map { node ->
-                    val timeStr = node.path("status").path("utcTime").asText().ifBlank { node.path("matchDate").asText() }
-                    val isHome = node.path("homeTeamName").asText().contains("Atletico Madrid", true)
-                    UpcomingMatch(
-                        opponent = if (isHome) node.path("awayTeamName").asText() else node.path("homeTeamName").asText(),
-                        matchDate = formatUtcTime(timeStr),
-                        isHome = isHome,
-                        tournament = node.path("leagueName").asText()
-                    )
-                }
+            } catch (e: Exception) {
+                println("⚠️ [Football API] Upcoming search failed: ${e.message}")
+            }
 
-            cachedResponse = MatchStatusResponse(recentMatch, upcoming)
-            println("✅ [Football API] 업데이트 완료 (API 호출: ${apiCallCount}회)")
-            
+            cachedResponse = MatchStatusResponse(newRecentMatch ?: cachedResponse?.recentResult, upcomingMatches)
+            println("✅ [Football API] 업데이트 완료 (API 호출: ${apiCallCount}회, 향후 일정: ${upcomingMatches.size}건 저장됨)")
             saveFootballLog(CollectionStatus.SUCCESS, apiCallCount, startTime)
         } catch (e: Exception) {
-            println("❌ [Football API] 업데이트 실패: ${e.message}")
+            println("❌ [Football API] 실패: ${e.message}")
             saveFootballLog(CollectionStatus.FAIL, apiCallCount, startTime, e.message)
         }
     }
 
     private suspend fun fetchScorers(matchId: String): List<Scorer> {
-        // 상세 정보 엔드포인트 시도 (football-match-detail 또는 football-get-match-detail)
         val response = try {
-            webClient.get()
-                .uri("/football-match-detail?id=$matchId")
-                .retrieve()
-                .bodyToMono(JsonNode::class.java)
-                .awaitSingle()
-        } catch (e: Exception) {
-            // 실패 시 다른 이름 시도
-            webClient.get()
-                .uri("/football-get-match-detail?id=$matchId")
-                .retrieve()
-                .bodyToMono(JsonNode::class.java)
-                .awaitSingle()
-        }
-
-        val events = response.path("data").path("events")
+            webClient.get().uri("/football-get-match-event-detail-by-event-id?event_id=$matchId").retrieve().bodyToMono(JsonNode::class.java).awaitSingle()
+        } catch (e: Exception) { return emptyList() }
+        val events = response.at("/response/events").takeIf { !it.isMissingNode } ?: response.at("/data/events")
         val scorers = mutableListOf<Scorer>()
-        for (event in events) {
-            if (event.path("type").asText() == "goal") {
-                scorers.add(
-                    Scorer(
-                        name = event.path("player").path("name").asText(),
-                        minute = "${event.path("time").asInt()}'",
-                        isHome = event.path("isHome").asBoolean()
-                    )
-                )
+        if (events.isArray) {
+            for (event in events) {
+                if (event.path("type").asText().lowercase().contains("goal")) {
+                    scorers.add(Scorer(name = event.at("/player/name").asText().takeIf { it.isNotBlank() } ?: event.path("playerName").asText(), minute = "${event.path("time").asInt()}'", isHome = event.path("isHome").asBoolean()))
+                }
             }
         }
         return scorers
     }
 
     private fun saveFootballLog(status: CollectionStatus, callCount: Int, startTime: Long, errorMsg: String? = null) {
-        collectionLogRepository.save(
-            CollectionLog(
-                status = status,
-                footballApiCallCount = callCount,
-                errorMsg = errorMsg,
-                executionTimeMs = System.currentTimeMillis() - startTime
-            )
-        )
-    }
-
-    private fun formatUtcTime(utcTime: String): String {
-        return try {
-            val instant = Instant.parse(utcTime)
-            instant.atZone(ZoneId.of("Asia/Seoul"))
-                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-        } catch (e: Exception) {
-            utcTime
-        }
+        collectionLogRepository.save(CollectionLog(status = status, footballApiCallCount = callCount, errorMsg = errorMsg, executionTimeMs = System.currentTimeMillis() - startTime))
     }
 }
 
-data class MatchStatusResponse(
-    val recentResult: RecentMatch?,
-    val upcomingMatches: List<UpcomingMatch>
-)
-
-data class RecentMatch(
-    val matchId: String,
-    val homeTeam: String,
-    val awayTeam: String,
-    val homeScore: Int,
-    val awayScore: Int,
-    val scorers: List<Scorer>,
-    val matchDate: String,
-    val isHome: Boolean,
-    val tournament: String
-)
-
-data class Scorer(
-    val name: String,
-    val minute: String,
-    val isHome: Boolean
-)
-
-data class UpcomingMatch(
-    val opponent: String,
-    val matchDate: String,
-    val isHome: Boolean,
-    val tournament: String
-)
+data class MatchStatusResponse(val recentResult: RecentMatch?, val upcomingMatches: List<UpcomingMatch>)
+data class RecentMatch(val matchId: String, val homeTeam: String, val awayTeam: String, val homeScore: Int, val awayScore: Int, val scorers: List<Scorer>, val matchDate: String, val isHome: Boolean, val tournament: String)
+data class Scorer(val name: String, val minute: String, val isHome: Boolean)
+data class UpcomingMatch(val opponent: String, val matchDate: String, val isHome: Boolean, val tournament: String)
