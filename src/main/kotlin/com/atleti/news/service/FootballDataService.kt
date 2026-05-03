@@ -151,8 +151,8 @@ class FootballDataService(
                         val aId = node.at("/away/id").asText()
                         
                         val isAtleti = hId == ATLETI_TEAM_ID || aId == ATLETI_TEAM_ID || 
-                                     (hName.contains("atletico madrid") || aName.contains("atletico madrid")) ||
-                                     ((hName == "atletico" || hName == "atleti") && !hName.contains("nacional") && !hName.contains("mineiro"))
+                                     (hName.contains("atletico") || hName.contains("atlético") || aName.contains("atletico") || aName.contains("atlético")) ||
+                                     ((hName == "atleti" || hName == "atléti") && !hName.contains("nacional") && !hName.contains("mineiro"))
                         
                         isAtleti && node.at("/status/finished").asBoolean()
                     }
@@ -212,10 +212,24 @@ class FootballDataService(
                         val isFinished = node.at("/status/finished").asBoolean()
                         val timeStr = node.at("/status/utcTime").asText().takeIf { it.isNotBlank() } ?: node.path("matchDate").asText()
                         
-                        val isAtleti = combinedName.contains("atletico") || combinedName.contains("atleti") || combinedName.contains("atm")
+                        val isAtleti = combinedName.contains("atletico") || combinedName.contains("atlético") || 
+                                     combinedName.contains("atleti") || combinedName.contains("atléti") || 
+                                     combinedName.contains("atm")
                         val isNotOther = !combinedName.contains("nacional") && !combinedName.contains("mineiro")
                         
-                        isAtleti && isNotOther && !isFinished && try { Instant.parse(timeStr).isAfter(now.minusSeconds(3600)) } catch (e: Exception) { false }
+                        val isFuture = try { 
+                            val parsedInstant = try {
+                                Instant.parse(timeStr)
+                            } catch (e: Exception) {
+                                // ISO-8601이 아닐 경우 (예: 2026-05-03 20:00:00) 처리 시도
+                                try {
+                                    LocalDateTime.parse(timeStr.replace(" ", "T")).atZone(ZoneId.of("UTC")).toInstant()
+                                } catch (e2: Exception) { null }
+                            }
+                            parsedInstant?.isAfter(now.minusSeconds(3600)) ?: true // 파싱 실패 시 일단 포함 (isFinished가 false이므로)
+                        } catch (e: Exception) { true }
+                        
+                        isAtleti && isNotOther && !isFinished && isFuture
                     }.sortedBy { it.at("/status/utcTime").asText().takeIf { it.isNotBlank() } ?: it.path("matchDate").asText() }.take(3)
                     
                     // DB 저장 전 기존 일정 초기화
