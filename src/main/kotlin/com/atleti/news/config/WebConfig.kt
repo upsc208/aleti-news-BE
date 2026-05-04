@@ -10,8 +10,8 @@ class WebConfig : WebMvcConfigurer {
     override fun addCorsMappings(registry: CorsRegistry) {
         registry.addMapping("/**")
             .allowedOrigins(
-                "https://atletico.kr",
-                "https://www.atletico.kr",
+                "https://atleti.kr",
+                "https://www.atleti.kr",
                 "http://localhost:3000" // 로컬 개발용 유지
             )
             .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
