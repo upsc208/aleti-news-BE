@@ -9,10 +9,13 @@ import com.atleti.news.repository.MatchResultRepository
 import com.atleti.news.repository.UpcomingMatchRepository
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.reactor.awaitSingle
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.ExchangeStrategies
@@ -44,6 +47,7 @@ class FootballDataService(
     private val SEARCH_QUERY = "Atletico Madrid"
     private val ATLETI_TEAM_ID = "9906"
     private var cachedResponse: MatchStatusResponse? = null
+    private val updateMutex = Mutex()
 
     suspend fun getRecentMatch(): RecentMatch? {
         if (cachedResponse == null || cachedResponse?.recentResult == null) loadFromDbOrUpdate()
@@ -55,7 +59,10 @@ class FootballDataService(
         return cachedResponse?.upcomingMatches ?: emptyList()
     }
 
-    private suspend fun loadFromDbOrUpdate() {
+    private suspend fun loadFromDbOrUpdate() = updateMutex.withLock {
+        // Double-check cache inside lock
+        if (cachedResponse != null && cachedResponse?.recentResult != null && cachedResponse?.upcomingMatches?.isNotEmpty() == true) return@withLock
+
         println("🧹 [Match DB] Consistency Check Started.")
         
         // 1. 최근 경기 결과 로드
@@ -89,7 +96,9 @@ class FootballDataService(
 
     @Scheduled(cron = "0 0 6 * * *", zone = "Asia/Seoul")
     fun scheduledUpdate() = runBlocking {
-        updateMatchStatus()
+        updateMutex.withLock {
+            updateMatchStatus()
+        }
     }
 
     private suspend fun updateMatchStatus() {
@@ -104,7 +113,7 @@ class FootballDataService(
             var newRecentMatch: RecentMatch? = null
             val dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
             
-            // 1. 최근 경기 결과 수집 (Loop back to working version)
+            // 1. 최근 경기 결과 수집
             for (i in 0..3) {
                 val dateStr = LocalDate.now().minusDays(i.toLong()).format(dateFormatter)
                 val url = "/football-get-matches-by-date?date=$dateStr"
@@ -156,17 +165,21 @@ class FootballDataService(
                             tournament = atletiMatch.at("/leagueName").asText().takeIf { it.isNotBlank() } ?: "Tournament"
                         )
 
-                        if (!matchResultRepository.existsByMatchId(matchId)) {
-                            matchResultRepository.save(MatchResult(
-                                matchId = newRecentMatch.matchId,
-                                homeTeam = newRecentMatch.homeTeam,
-                                awayTeam = newRecentMatch.awayTeam,
-                                homeScore = newRecentMatch.homeScore,
-                                awayScore = newRecentMatch.awayScore,
-                                matchDate = newRecentMatch.matchDate,
-                                tournament = newRecentMatch.tournament,
-                                isHome = newRecentMatch.isHome
-                            ))
+                        try {
+                            if (!matchResultRepository.existsByMatchId(matchId)) {
+                                matchResultRepository.save(MatchResult(
+                                    matchId = newRecentMatch.matchId,
+                                    homeTeam = newRecentMatch.homeTeam,
+                                    awayTeam = newRecentMatch.awayTeam,
+                                    homeScore = newRecentMatch.homeScore,
+                                    awayScore = newRecentMatch.awayScore,
+                                    matchDate = newRecentMatch.matchDate,
+                                    tournament = newRecentMatch.tournament,
+                                    isHome = newRecentMatch.isHome
+                                ))
+                            }
+                        } catch (e: DataIntegrityViolationException) {
+                            println("⚠️ [Match DB] Duplicate matchId detected ($matchId), skipping save.")
                         }
                         break
                     }
@@ -223,6 +236,7 @@ class FootballDataService(
             cachedResponse = MatchStatusResponse(newRecentMatch ?: cachedResponse?.recentResult, upcomingMatches)
             saveFootballLog(CollectionStatus.SUCCESS, apiCallCount, startTime)
         } catch (e: Exception) {
+            println("❌ [Football API] Update failed: ${e.message}")
             saveFootballLog(CollectionStatus.FAIL, apiCallCount, startTime, e.message)
         }
     }
