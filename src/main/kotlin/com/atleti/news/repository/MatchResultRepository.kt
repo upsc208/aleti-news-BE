@@ -8,4 +8,5 @@ import org.springframework.stereotype.Repository
 interface MatchResultRepository : JpaRepository<MatchResult, Long> {
     fun findTopByOrderByMatchDateDesc(): MatchResult?
     fun findAllByOrderByMatchDateDesc(): List<MatchResult>
+    fun existsByMatchId(matchId: String): Boolean
 }
