@@ -4,13 +4,15 @@ import jakarta.persistence.*
 import java.time.LocalDateTime
 
 @Entity
-@Table(name = "match_result")
+@Table(name = "match_result", uniqueConstraints = [UniqueConstraint(columnNames = ["matchId"])])
 class MatchResult(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long? = null,
 
+    @Column(unique = true, nullable = false)
     val matchId: String,
+    
     val homeTeam: String,
     val awayTeam: String,
     val homeScore: Int,
@@ -18,9 +20,6 @@ class MatchResult(
     val matchDate: String,
     val tournament: String,
     val isHome: Boolean,
-
-    @Column(columnDefinition = "TEXT")
-    val scorersJson: String? = null, // 득점자 정보를 JSON 문자열로 저장
 
     val updatedAt: LocalDateTime = LocalDateTime.now()
 )
