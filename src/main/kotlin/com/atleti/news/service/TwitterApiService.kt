@@ -75,7 +75,7 @@ class TwitterApiService(
             try {
                 org.json.JSONArray(jsonBody)
             } catch (e2: Exception) {
-                println("⚠️ [RapidAPI] JSON 파싱 실패: \${e2.message}")
+                println("⚠️ [RapidAPI] JSON 파싱 실패: ${e2.message}")
                 return emptyList()
             }
         }

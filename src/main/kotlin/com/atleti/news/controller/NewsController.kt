@@ -24,20 +24,18 @@ class NewsController(
     private val newsPipelineService: NewsPipelineService
 ) {
 
-    @Operation(summary = "뉴스 목록 조회 (필터링 포함)", description = "이미지 정보를 제외한 가벼운 뉴스 목록을 가져옵니다. 소스 ID 리스트로 필터링이 가능합니다.")
+    @Operation(summary = "뉴스 목록 조회 (필터링 및 검색 포함)", description = "뉴스 목록을 가져옵니다. 소스 리스트, 카테고리, 그리고 검색어(제목/본문) 필터링이 가능합니다.")
     @GetMapping
     fun getNews(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "10") size: Int,
-        @RequestParam(required = false) sources: List<String>?
+        @RequestParam(required = false) sources: List<String>?,
+        @RequestParam(required = false) category: String?,
+        @RequestParam(required = false) search: String?
     ): Page<NewsListResponse> {
         val pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending())
         
-        val articles = if (sources.isNullOrEmpty()) {
-            newsArticleRepository.findAll(pageable)
-        } else {
-            newsArticleRepository.findAllBySourceNameIn(sources, pageable)
-        }
+        val articles = newsArticleRepository.searchNews(sources, category, search, pageable)
 
         return articles.map { 
             NewsListResponse(
@@ -46,7 +44,8 @@ class NewsController(
                 sourceName = it.sourceName,
                 publishedAt = it.publishedAt,
                 articleType = it.articleType,
-                summaryKo = it.summaryKo
+                summaryKo = it.summaryKo,
+                category = it.category
             )
         }
     }
@@ -73,7 +72,8 @@ class NewsController(
             authorName = article.authorName,
             originalUrl = article.originalUrl,
             publishedAt = article.publishedAt,
-            articleType = article.articleType
+            articleType = article.articleType,
+            category = article.category
         )
     }
 
@@ -103,7 +103,8 @@ data class NewsListResponse(
     val sourceName: String,
     val publishedAt: OffsetDateTime?,
     val articleType: ArticleType,
-    val summaryKo: String?
+    val summaryKo: String?,
+    val category: String?
 )
 
 /**
@@ -119,5 +120,6 @@ data class NewsDetailResponse(
     val authorName: String?,
     val originalUrl: String,
     val publishedAt: OffsetDateTime?,
-    val articleType: ArticleType
+    val articleType: ArticleType,
+    val category: String?
 )
