@@ -136,15 +136,22 @@ class NewsPipelineService(
             if (keywords.none { lowerTitle.contains(it) }) return
         }
 
-        val (fullContent, actualAuthor) = if (article.sourceName == "Marca" || article.sourceName == "AS") {
+        val (fullContent, actualAuthor, actualPublishedAt) = if (article.sourceName == "Marca" || article.sourceName == "AS") {
             try {
                 val detail = scraperService.fetchFullContent(article.url)
-                detail.content to detail.authorName
+                if (detail.content.isBlank() || detail.content.length < 50) {
+                    println("⏭️ 본문 내용이 너무 짧거나 비어있습니다. (${article.url})")
+                    return
+                }
+                Triple(detail.content, detail.authorName, detail.publishedAt)
             } catch (e: Exception) {
-                article.title to (article.authorName ?: article.sourceName)
+                println("⏭️ 상세 정보 추출 실패로 수집을 건너뜁니다: ${article.url}")
+                return
             }
         } else {
-            article.title to (article.authorName ?: "Unknown")
+            // 트위터 등의 경우 title이 곧 본문이 됨
+            if (article.title.isBlank()) return
+            Triple(article.title, article.authorName ?: "Unknown", article.publishedAt)
         }
 
         val geminiResult = geminiSemaphore.withPermit {
@@ -166,7 +173,7 @@ class NewsPipelineService(
                         imageUrl = article.imageUrl,
                         category = geminiResult.category, // 새 필드 저장
                         isAtmRelated = true,
-                        publishedAt = article.publishedAt 
+                        publishedAt = actualPublishedAt 
                     )
                 )
                 aiProcessedCount.incrementAndGet()

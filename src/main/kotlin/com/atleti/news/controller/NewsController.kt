@@ -35,13 +35,15 @@ class NewsController(
     ): Page<NewsListResponse> {
         val pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending())
         
-        val articles = newsArticleRepository.searchNews(sources, category, search, pageable)
+        val lowerSources = sources?.map { it.lowercase() }
+        val articles = newsArticleRepository.searchNews(lowerSources, category, search, pageable)
 
         return articles.map { 
             NewsListResponse(
                 id = it.id!!,
                 titleKo = it.titleKo,
                 sourceName = it.sourceName,
+                authorName = it.authorName,
                 publishedAt = it.publishedAt,
                 articleType = it.articleType,
                 summaryKo = it.summaryKo,
@@ -101,6 +103,7 @@ data class NewsListResponse(
     val id: Long,
     val titleKo: String?,
     val sourceName: String,
+    val authorName: String?,
     val publishedAt: OffsetDateTime?,
     val articleType: ArticleType,
     val summaryKo: String?,

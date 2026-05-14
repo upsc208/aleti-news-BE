@@ -17,9 +17,11 @@ class ScraperService {
                 .userAgent("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
                 .get()
             
-            doc.select("article").mapNotNull { element ->
+            // Marca ATM 페이지의 주요 기사 영역인 .ue-c-main-article 및 목록 .ue-c-cover-content__main만 선택
+            doc.select(".ue-c-main-article, .ue-c-cover-content__main article").mapNotNull { element ->
                 try {
-                    val title = element.select("h2, h3").text()
+                    val titleElement = element.select("h2, h3").firstOrNull() ?: return@mapNotNull null
+                    val title = titleElement.text()
                     val link = element.select("a").attr("abs:href")
                     val imageUrl = element.select("img").attr("src")
                     
@@ -99,15 +101,30 @@ class ScraperService {
                 ?: "Unknown"
 
             // 발행 시간 추출
-            val timeStr = doc.select("time").attr("datetime")
-            val publishedAt = if (timeStr.isNotBlank()) {
-                try { OffsetDateTime.parse(timeStr) } catch (e: Exception) { OffsetDateTime.now() }
-            } else {
-                val metaTime = doc.select("meta[property='article:published_time']").attr("content")
-                if (metaTime.isNotBlank()) {
-                    try { OffsetDateTime.parse(metaTime) } catch (e: Exception) { OffsetDateTime.now() }
-                } else OffsetDateTime.now()
+            val SEOUL_ZONE = java.time.ZoneId.of("Asia/Seoul")
+            
+            fun parseToKST(raw: String?): OffsetDateTime? {
+                if (raw.isNullOrBlank()) return null
+                return try {
+                    // ISO 8601 (e.g., 2026-05-12T21:39:44Z)
+                    OffsetDateTime.parse(raw)
+                        .atZoneSameInstant(SEOUL_ZONE)
+                        .toOffsetDateTime()
+                } catch (e: Exception) {
+                    try {
+                        // Unix Timestamp (e.g., 1778582674)
+                        val instant = java.time.Instant.ofEpochSecond(raw.toLong())
+                        OffsetDateTime.ofInstant(instant, SEOUL_ZONE)
+                    } catch (e2: Exception) { null }
+                }
             }
+
+            val publishedAt = parseToKST(doc.select("meta[property='article:published_time']").attr("content"))
+                ?: parseToKST(doc.select("meta[property='article:modified_time']").attr("content"))
+                ?: parseToKST(doc.select("meta[name='date']").attr("content"))
+                ?: parseToKST(doc.select(".ue-c-article__publishdate time").attr("datetime"))
+                ?: parseToKST(doc.select("time").attr("datetime"))
+                ?: OffsetDateTime.now(SEOUL_ZONE)
 
             // 본문 추출 (Marca: .ue-c-article__body, AS: .a_c, .article-body)
             val bodyElements = doc.select(".ue-c-article__body p, .article-content p, .a_c p, .article-body p")
@@ -119,8 +136,9 @@ class ScraperService {
 
             ArticleDetail(content = content, authorName = authorName, publishedAt = publishedAt)
         } catch (e: Exception) {
+            val SEOUL_ZONE = java.time.ZoneId.of("Asia/Seoul")
             println("❌ 상세 정보 추출 실패 ($url): ${e.message}")
-            ArticleDetail(content = "", authorName = "Unknown", publishedAt = OffsetDateTime.now())
+            ArticleDetail(content = "", authorName = "Unknown", publishedAt = OffsetDateTime.now(SEOUL_ZONE))
         }
     }
 }
@@ -138,5 +156,5 @@ data class ScrapedArticle(
     val sourceName: String,
     val articleType: ArticleType,
     val authorName: String?,
-    val publishedAt: java.time.OffsetDateTime = java.time.OffsetDateTime.now()
+    val publishedAt: java.time.OffsetDateTime = java.time.OffsetDateTime.now(java.time.ZoneId.of("Asia/Seoul"))
 )

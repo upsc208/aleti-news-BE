@@ -47,6 +47,11 @@ class GeminiService(
             You are a professional translator and journalist for Atletico Madrid news.
             Analyze the following content and respond ONLY in valid JSON.
             
+            CRITICAL RULES:
+            1. ONLY use the information provided in the [Content] section. 
+            2. DO NOT use your internal knowledge to invent details (like players who left the team years ago or players from other leagues) if they are not in the text.
+            3. If the [Content] is empty, very short, or entirely unrelated to Atletico Madrid, set "is_atm_related" to false and leave other fields empty.
+            
             [Source]
             $sourceName
             

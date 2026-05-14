@@ -16,7 +16,7 @@ interface NewsArticleRepository : JpaRepository<NewsArticle, Long> {
 
     @Query("""
         SELECT n FROM NewsArticle n 
-        WHERE (:sources IS NULL OR n.sourceName IN :sources)
+        WHERE (:sources IS NULL OR LOWER(n.sourceName) IN :sources)
           AND (:category IS NULL OR n.category = :category)
           AND (:search IS NULL OR LOWER(n.titleKo) LIKE LOWER(CONCAT('%', :search, '%')) 
                                OR LOWER(n.contentKo) LIKE LOWER(CONCAT('%', :search, '%')))
