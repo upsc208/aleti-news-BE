@@ -134,11 +134,20 @@ class ScraperService {
                 bodyElements.joinToString("\n\n") { it.text() }
             }
 
-            ArticleDetail(content = content, authorName = authorName, publishedAt = publishedAt)
+            // 고화질 이미지 추출 (og:image 메타 태그 활용)
+            val highResImageUrl = doc.select("meta[property='og:image']").attr("content").takeIf { it.isNotBlank() }
+                ?: doc.select("meta[name='twitter:image']").attr("content").takeIf { it.isNotBlank() }
+
+            ArticleDetail(
+                content = content, 
+                authorName = authorName, 
+                publishedAt = publishedAt,
+                imageUrl = highResImageUrl
+            )
         } catch (e: Exception) {
             val SEOUL_ZONE = java.time.ZoneId.of("Asia/Seoul")
             println("❌ 상세 정보 추출 실패 ($url): ${e.message}")
-            ArticleDetail(content = "", authorName = "Unknown", publishedAt = OffsetDateTime.now(SEOUL_ZONE))
+            ArticleDetail(content = "", authorName = "Unknown", publishedAt = OffsetDateTime.now(SEOUL_ZONE), imageUrl = null)
         }
     }
 }
@@ -146,7 +155,8 @@ class ScraperService {
 data class ArticleDetail(
     val content: String,
     val authorName: String,
-    val publishedAt: java.time.OffsetDateTime
+    val publishedAt: java.time.OffsetDateTime,
+    val imageUrl: String? = null
 )
 
 data class ScrapedArticle(

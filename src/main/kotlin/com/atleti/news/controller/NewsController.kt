@@ -47,7 +47,8 @@ class NewsController(
                 publishedAt = it.publishedAt,
                 articleType = it.articleType,
                 summaryKo = it.summaryKo,
-                category = it.category
+                category = it.category,
+                imageUrl = it.imageUrl
             )
         }
     }
@@ -97,7 +98,7 @@ class NewsController(
 }
 
 /**
- * 목록 조회용 응답 DTO (이미지 URL 제외)
+ * 목록 조회용 응답 DTO
  */
 data class NewsListResponse(
     val id: Long,
@@ -107,7 +108,8 @@ data class NewsListResponse(
     val publishedAt: OffsetDateTime?,
     val articleType: ArticleType,
     val summaryKo: String?,
-    val category: String?
+    val category: String?,
+    val imageUrl: String?
 )
 
 /**

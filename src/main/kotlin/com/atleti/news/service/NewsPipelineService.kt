@@ -136,14 +136,14 @@ class NewsPipelineService(
             if (keywords.none { lowerTitle.contains(it) }) return
         }
 
-        val (fullContent, actualAuthor, actualPublishedAt) = if (article.sourceName == "Marca" || article.sourceName == "AS") {
+        val detailResult = if (article.sourceName == "Marca" || article.sourceName == "AS") {
             try {
                 val detail = scraperService.fetchFullContent(article.url)
                 if (detail.content.isBlank() || detail.content.length < 50) {
                     println("⏭️ 본문 내용이 너무 짧거나 비어있습니다. (${article.url})")
                     return
                 }
-                Triple(detail.content, detail.authorName, detail.publishedAt)
+                detail
             } catch (e: Exception) {
                 println("⏭️ 상세 정보 추출 실패로 수집을 건너뜁니다: ${article.url}")
                 return
@@ -151,11 +151,16 @@ class NewsPipelineService(
         } else {
             // 트위터 등의 경우 title이 곧 본문이 됨
             if (article.title.isBlank()) return
-            Triple(article.title, article.authorName ?: "Unknown", article.publishedAt)
+            ArticleDetail(
+                content = article.title,
+                authorName = article.authorName ?: "Unknown",
+                publishedAt = article.publishedAt,
+                imageUrl = null
+            )
         }
 
         val geminiResult = geminiSemaphore.withPermit {
-            geminiService.processArticle(article.title, fullContent, article.sourceName, skipValidation = true)
+            geminiService.processArticle(article.title, detailResult.content, article.sourceName, skipValidation = true)
         }
 
         if (geminiResult != null && (isTwitter || geminiResult.is_atm_related)) {
@@ -164,16 +169,16 @@ class NewsPipelineService(
                     NewsArticle(
                         articleType = article.articleType,
                         sourceName = article.sourceName,
-                        authorName = actualAuthor,
+                        authorName = detailResult.authorName,
                         originalUrl = article.url,
                         titleKo = geminiResult.title_ko,
                         summaryKo = geminiResult.summary_ko,
                         contentKo = geminiResult.content_ko,
-                        contentRaw = fullContent,
-                        imageUrl = article.imageUrl,
+                        contentRaw = detailResult.content,
+                        imageUrl = detailResult.imageUrl ?: article.imageUrl,
                         category = geminiResult.category, // 새 필드 저장
                         isAtmRelated = true,
-                        publishedAt = actualPublishedAt 
+                        publishedAt = detailResult.publishedAt 
                     )
                 )
                 aiProcessedCount.incrementAndGet()
