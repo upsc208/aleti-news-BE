@@ -13,11 +13,18 @@ class DataInitializer(private val newsSourceRepository: NewsSourceRepository) {
     fun initData() = CommandLineRunner {
         val sources = listOf(
             NewsSource(
-                internalId = "Marca",
+                internalId = "marca",
                 displayName = "Marca (마르카)",
                 sourceUrl = "https://www.marca.com/futbol/atletico.html",
                 category = "MEDIA",
                 iconUrl = "https://www.marca.com/favicon.ico"
+            ),
+            NewsSource(
+                internalId = "as",
+                displayName = "AS (아스)",
+                sourceUrl = "https://as.com/noticias/atletico-madrid/",
+                category = "MEDIA",
+                iconUrl = "https://as.com/favicon.ico"
             ),
             NewsSource(
                 internalId = "MatteoMoretto",

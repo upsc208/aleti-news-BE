@@ -27,7 +27,7 @@ class NitterScraperService {
                     println("ℹ️ Nitter 인스턴스 ($instance): 결과가 비어있습니다. 다음 인스턴스로 시도합니다.")
                 }
             } catch (e: Exception) {
-                println("❌ Nitter 인스턴스 실패 ($instance): \${e.message}. 다음 인스턴스로 시도합니다.")
+                println("❌ Nitter 인스턴스 실패 ($instance): ${e.message}. 다음 인스턴스로 시도합니다.")
                 continue
             }
         }
@@ -35,7 +35,7 @@ class NitterScraperService {
     }
 
     private suspend fun scrapeFromInstance(baseUrl: String, username: String): List<ScrapedArticle> = withContext(Dispatchers.IO) {
-        val url = "\$baseUrl/\$username"
+        val url = "$baseUrl/$username"
         val doc = Jsoup.connect(url)
             .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .get()
@@ -46,9 +46,10 @@ class NitterScraperService {
             val publishedAt = element.select(".tweet-date a").attr("title")
             
             if (content.isNotBlank() && link.isNotBlank()) {
+                val xLink = link.replace(Regex("https://[^/]+"), "https://x.com")
                 ScrapedArticle(
                     title = content.take(100) + if (content.length > 100) "..." else "",
-                    url = link,
+                    url = xLink,
                     imageUrl = null, // 트위터 이미지는 별도 파싱 필요
                     sourceName = "Twitter (@$username)",
                     articleType = com.atleti.news.entity.ArticleType.SNS_POST,

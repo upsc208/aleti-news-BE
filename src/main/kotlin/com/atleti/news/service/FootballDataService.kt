@@ -30,6 +30,7 @@ import java.time.format.DateTimeFormatter
 class FootballDataService(
     @Value("\${rapidapi.key}") private val apiKey: String,
     @Value("\${rapidapi.football.host}") private val apiHost: String,
+    @Value("\${atleti.news.enabled.football}") private val isFootballEnabled: Boolean,
     private val objectMapper: ObjectMapper,
     private val collectionLogRepository: CollectionLogRepository,
     private val matchResultRepository: MatchResultRepository,
@@ -94,7 +95,7 @@ class FootballDataService(
         }
     }
 
-    @Scheduled(cron = "0 0 6 * * *", zone = "Asia/Seoul")
+    @Scheduled(cron = "0 0 7 * * *", zone = "Asia/Seoul")
     fun scheduledUpdate() = runBlocking {
         updateMutex.withLock {
             updateMatchStatus()
@@ -102,6 +103,11 @@ class FootballDataService(
     }
 
     private suspend fun updateMatchStatus() {
+        if (!isFootballEnabled) {
+            println("⏭️ [Football API] 수집이 설정에 의해 비활성화되어 있습니다.")
+            return
+        }
+
         val startOfMonth = LocalDate.now().withDayOfMonth(1).atStartOfDay().atOffset(java.time.ZoneOffset.UTC)
         val monthlyUsage = collectionLogRepository.sumFootballApiCallCountSince(startOfMonth) ?: 0
         if (monthlyUsage >= 95) return

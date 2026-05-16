@@ -46,6 +46,9 @@ class NewsArticle(
     @Column(name = "published_at")
     val publishedAt: OffsetDateTime?,
 
+    @Column(name = "category")
+    val category: String? = "ETC", // [이적시장], [경기리뷰], [오피셜], [부상/명단], [인터뷰], [예상라인업], [기타]
+
     @Column(name = "is_atm_related", nullable = false)
     val isAtmRelated: Boolean = false,
 

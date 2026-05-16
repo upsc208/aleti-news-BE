@@ -75,7 +75,7 @@ class TwitterApiService(
             try {
                 org.json.JSONArray(jsonBody)
             } catch (e2: Exception) {
-                println("⚠️ [RapidAPI] JSON 파싱 실패: \${e2.message}")
+                println("⚠️ [RapidAPI] JSON 파싱 실패: ${e2.message}")
                 return emptyList()
             }
         }
@@ -92,12 +92,15 @@ class TwitterApiService(
             
             // 발행 시간 추출
             val createdAtStr = tweet.optString("created_at")
+            val SEOUL_ZONE = java.time.ZoneId.of("Asia/Seoul")
             val publishedAt = try {
                 // Twitter 날짜 형식: "Mon Apr 27 14:55:01 +0000 2026"
                 val formatter = java.time.format.DateTimeFormatter.ofPattern("EEE MMM dd HH:mm:ss Z yyyy", java.util.Locale.ENGLISH)
                 OffsetDateTime.parse(createdAtStr, formatter)
+                    .atZoneSameInstant(SEOUL_ZONE)
+                    .toOffsetDateTime()
             } catch (e: Exception) {
-                OffsetDateTime.now()
+                OffsetDateTime.now(SEOUL_ZONE)
             }
             
             if (text.isNotBlank() && tweetId.isNotBlank()) {
