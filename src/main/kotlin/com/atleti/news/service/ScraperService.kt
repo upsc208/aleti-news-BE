@@ -13,8 +13,12 @@ class ScraperService {
     suspend fun scrapeMarcaAtm(): List<ScrapedArticle> = withContext(Dispatchers.IO) {
         val url = "https://www.marca.com/futbol/atletico.html"
         try {
+            kotlinx.coroutines.delay((500..1500).random().toLong())
             val doc = Jsoup.connect(url)
-                .userAgent("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+                .header("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7")
+                .header("Cache-Control", "max-age=0")
                 .get()
             
             // Marca ATM 페이지의 주요 기사 영역인 .ue-c-main-article 및 목록 .ue-c-cover-content__main만 선택
@@ -40,6 +44,7 @@ class ScraperService {
                 }
             }
         } catch (e: Exception) {
+            println("❌ [Marca Scrape] Failed: ${e.message}")
             emptyList()
         }
     }
@@ -47,10 +52,12 @@ class ScraperService {
     suspend fun scrapeAsAtm(): List<ScrapedArticle> = withContext(Dispatchers.IO) {
         val url = "https://as.com/noticias/atletico-madrid/"
         try {
+            kotlinx.coroutines.delay((500..1500).random().toLong())
             val doc = Jsoup.connect(url)
-                .userAgent("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
                 .header("Accept-Language", "es-ES,es;q=0.9,en;q=0.8")
+                .header("Cache-Control", "max-age=0")
                 .referrer("https://as.com/")
                 .get()
             
@@ -79,6 +86,7 @@ class ScraperService {
                 }
             }
         } catch (e: Exception) {
+            println("❌ [AS Scrape] Failed: ${e.message}")
             emptyList()
         }
     }
@@ -88,11 +96,13 @@ class ScraperService {
      */
     suspend fun fetchFullContent(url: String): ArticleDetail = withContext(Dispatchers.IO) {
         try {
+            kotlinx.coroutines.delay((1000..2000).random().toLong())
             val doc = Jsoup.connect(url)
-                .userAgent("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "es-ES,es;q=0.9,en;q=0.8")
-                .referrer("https://as.com/")
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+                .header("Accept-Language", "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7")
+                .header("Cache-Control", "max-age=0")
+                .referrer(if (url.contains("as.com")) "https://as.com/" else "https://www.marca.com/")
                 .get()
             
             // 기자 이름 추출

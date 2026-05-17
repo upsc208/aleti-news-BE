@@ -160,7 +160,9 @@ class NewsPipelineService(
         }
 
         val geminiResult = geminiSemaphore.withPermit {
-            geminiService.processArticle(article.title, detailResult.content, article.sourceName, skipValidation = true)
+            // 지나치게 긴 본문은 잘라서 보냅니다 (JSON 파싱 에러 방지)
+            val limitedContent = detailResult.content.take(10000)
+            geminiService.processArticle(article.title, limitedContent, article.sourceName, skipValidation = true)
         }
 
         if (geminiResult != null && (isTwitter || geminiResult.is_atm_related)) {
