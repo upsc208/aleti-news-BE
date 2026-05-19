@@ -98,14 +98,33 @@ class ScraperService {
      */
     suspend fun fetchFullContent(url: String): ArticleDetail = withContext(Dispatchers.IO) {
         try {
-            kotlinx.coroutines.delay((1000..2000).random().toLong())
+            // 개별 기사 접근 전 지연 시간을 조금 더 길게 가져갑니다.
+            kotlinx.coroutines.delay((1500..3000).random().toLong())
+            
             val doc = Jsoup.connect(url)
-                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
                 .header("Accept-Language", "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7")
-                .header("Cache-Control", "max-age=0")
+                .header("Cache-Control", "no-cache")
+                .header("Pragma", "no-cache")
+                .header("Sec-Ch-Ua", "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"")
+                .header("Sec-Ch-Ua-Mobile", "?0")
+                .header("Sec-Ch-Ua-Platform", "\"Windows\"")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "same-origin")
+                .header("Sec-Fetch-User", "?1")
+                .header("Upgrade-Insecure-Requests", "1")
                 .referrer(if (url.contains("as.com")) "https://as.com/" else "https://www.marca.com/")
+                .ignoreHttpErrors(true)
+                .timeout(20000)
                 .get()
+            
+            val status = doc.connection().response().statusCode()
+            if (status == 403) {
+                println("⚠️ [Scraper 403] $url - Access denied (WAF Blocked)")
+                return@withContext ArticleDetail(content = "", authorName = "Unknown", publishedAt = OffsetDateTime.now(java.time.ZoneId.of("Asia/Seoul")), imageUrl = null)
+            }
             
             // 기자 이름 추출
             val authorName = doc.select(".ue-c-article__author-name, .ue-c-article__author-link, .author-name, .a_md_a_n, .s_a").firstOrNull()?.text() 

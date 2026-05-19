@@ -45,6 +45,7 @@ class NewsPipelineService(
         val twitterApiCallCount = AtomicInteger(0)
         val startTime = System.currentTimeMillis()
         val geminiSemaphore = Semaphore(3)
+        val scrapingSemaphore = Semaphore(2) // 상세 페이지 수집은 더 보수적으로 (동시 2개만)
 
         try {
             coroutineScope {
@@ -110,7 +111,7 @@ class NewsPipelineService(
                 // 4. 병렬 처리 및 저장
                 sortedArticles.map { article ->
                     async {
-                        processSingleArticle(article, aiProcessedCount, geminiSemaphore)
+                        processSingleArticle(article, aiProcessedCount, geminiSemaphore, scrapingSemaphore)
                     }
                 }.awaitAll()
             }
@@ -124,7 +125,8 @@ class NewsPipelineService(
     private suspend fun processSingleArticle(
         article: ScrapedArticle,
         aiProcessedCount: AtomicInteger,
-        geminiSemaphore: Semaphore
+        geminiSemaphore: Semaphore,
+        scrapingSemaphore: Semaphore
     ) {
         if (newsArticleRepository.existsByOriginalUrl(article.url)) return
 
@@ -140,14 +142,21 @@ class NewsPipelineService(
 
         val detailResult = if (article.sourceName == "Marca" || article.sourceName == "AS") {
             try {
-                val detail = scraperService.fetchFullContent(article.url)
-                if (detail.content.isBlank() || detail.content.length < 50) {
-                    println("⏭️ 본문 내용이 너무 짧거나 비어있습니다. (${article.url})")
-                    return
-                }
-                detail
+                // 수집 세마포어 적용 (너무 많은 동시 요청 방지)
+                scrapingSemaphore.withPermit {
+                    val detail = scraperService.fetchFullContent(article.url)
+                    if (detail.content.isBlank() || detail.content.length < 50) {
+                        if (detail.content.isBlank()) {
+                            // 403이나 비어있는 경우 로그는 fetchFullContent에서 이미 찍힘
+                        } else {
+                            println("⏭️ 본문 내용이 너무 짧습니다 (${detail.content.length}자). (${article.url})")
+                        }
+                        return@withPermit null
+                    }
+                    detail
+                } ?: return
             } catch (e: Exception) {
-                println("⏭️ 상세 정보 추출 실패로 수집을 건너뜁니다: ${article.url}")
+                println("⏭️ 상세 정보 추출 실패로 수집을 건너뜜: ${article.url}")
                 return
             }
         } else {

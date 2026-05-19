@@ -125,7 +125,14 @@ class GeminiService(
             val firstPart = parts.firstOrNull() as? Map<*, *> ?: return null
             val text = (firstPart["text"] as? String)?.trim() ?: return null
             
-            val cleanJson = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            // JSON 마크다운 태그 제거 및 전처리
+            var cleanJson = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            
+            // [해결] Unrecognized character escape '렝' 같은 에러 방지를 위해
+            // 한글 앞에 잘못 붙은 백슬래시(\)를 제거하거나 이스케이프 문자를 정규화합니다.
+            // 보통 AI가 한국어 텍스트 내에서 특수문자로 오해하고 백슬래시를 넣는 경우가 있음
+            cleanJson = cleanJson.replace(Regex("\\\\(?![u\"\\\\/bfnrt])"), "") 
+
             objectMapper.readValue<GeminiResponse>(cleanJson)
         } catch (e: Exception) {
             println("❌ JSON 파싱 실패: ${e.message}")
