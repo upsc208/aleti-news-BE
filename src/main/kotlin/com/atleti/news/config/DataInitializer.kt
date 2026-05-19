@@ -2,15 +2,18 @@ package com.atleti.news.config
 
 import com.atleti.news.entity.NewsSource
 import com.atleti.news.repository.NewsSourceRepository
+import org.slf4j.LoggerFactory
 import org.springframework.boot.CommandLineRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 @Configuration
 class DataInitializer(private val newsSourceRepository: NewsSourceRepository) {
+    private val logger = LoggerFactory.getLogger(DataInitializer::class.java)
 
     @Bean
     fun initData() = CommandLineRunner {
+        logger.info("🚀 Data initialization started...")
         val sources = listOf(
             NewsSource(
                 internalId = "marca",
@@ -71,9 +74,21 @@ class DataInitializer(private val newsSourceRepository: NewsSourceRepository) {
         )
 
         sources.forEach { source ->
-            if (newsSourceRepository.findByInternalId(source.internalId) == null) {
+            val existing = newsSourceRepository.findByInternalId(source.internalId)
+            if (existing == null) {
                 newsSourceRepository.save(source)
+                logger.info("✅ Saved new source: ${source.internalId}")
+            } else {
+                // 이미 존재한다면 isActive가 true인지 확인 (혹시 수동으로 꺼져있을 수 있으니 다시 활성화)
+                if (!existing.isActive) {
+                    existing.isActive = true
+                    newsSourceRepository.save(existing)
+                    logger.info("🔄 Updated existing source to active: ${existing.internalId}")
+                } else {
+                    logger.info("ℹ️ Source already exists and is active: ${existing.internalId}")
+                }
             }
         }
+        logger.info("🏁 Data initialization completed.")
     }
 }

@@ -19,13 +19,13 @@ class NewsArticle(
     @Column(name = "article_type", nullable = false)
     val articleType: ArticleType = ArticleType.WEB_ARTICLE,
 
-    @Column(name = "source_name", nullable = false)
+    @Column(name = "source_name", nullable = false, columnDefinition = "TEXT")
     val sourceName: String,
 
-    @Column(name = "author_name")
+    @Column(name = "author_name", columnDefinition = "TEXT")
     val authorName: String? = null, // 트위터 핸들 또는 기사 작성자
 
-    @Column(name = "original_url", nullable = false, unique = true)
+    @Column(name = "original_url", nullable = false, unique = true, columnDefinition = "TEXT")
     val originalUrl: String,
 
     @Column(name = "title_ko", columnDefinition = "TEXT")

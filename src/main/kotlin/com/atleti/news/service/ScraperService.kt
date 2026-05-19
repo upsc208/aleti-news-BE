@@ -21,8 +21,8 @@ class ScraperService {
                 .header("Cache-Control", "max-age=0")
                 .get()
             
-            // Marca ATM 페이지의 주요 기사 영역인 .ue-c-main-article 및 목록 .ue-c-cover-content__main만 선택
-            doc.select(".ue-c-main-article, .ue-c-cover-content__main article").mapNotNull { element ->
+            // Marca ATM 페이지의 기사 선택자 업데이트
+            val articles = doc.select("article.ue-c-cover-content, .ue-c-main-article, .ue-c-cover-content__main article").mapNotNull { element ->
                 try {
                     val titleElement = element.select("h2, h3").firstOrNull() ?: return@mapNotNull null
                     val title = titleElement.text()
@@ -43,6 +43,8 @@ class ScraperService {
                     null
                 }
             }
+            println("✅ [Marca Scrape] ${articles.size} articles found.")
+            articles
         } catch (e: Exception) {
             println("❌ [Marca Scrape] Failed: ${e.message}")
             emptyList()

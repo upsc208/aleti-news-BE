@@ -62,13 +62,15 @@ class NewsPipelineService(
                 mediaSources.forEach { source ->
                     deferredArticles.add(async {
                         println("🔍 ${source.displayName} 수집 시작...")
-                        if (source.internalId == "marca") {
+                        val scraped = if (source.internalId == "marca") {
                             scraperService.scrapeMarcaAtm()
                         } else if (source.internalId == "as") {
                             scraperService.scrapeAsAtm()
                         } else {
                             emptyList<ScrapedArticle>()
                         }
+                        println("✅ ${source.displayName}: ${scraped.size}개 기사 발견")
+                        scraped
                     })
                 }
 
