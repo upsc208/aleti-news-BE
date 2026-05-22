@@ -24,7 +24,9 @@ class NewsPipelineService(
     private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.keywords}") private val keywordString: String,
-    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.twitter}") private val isTwitterEnabled: Boolean
+    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.twitter}") private val isTwitterEnabled: Boolean,
+    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.news}") private val isNewsEnabled: Boolean,
+    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.gemini}") private val isGeminiEnabled: Boolean
 ) {
     private val keywords = keywordString.split(",").map { it.trim().lowercase() }
     
@@ -60,19 +62,23 @@ class NewsPipelineService(
                 val deferredArticles = mutableListOf<Deferred<List<ScrapedArticle>>>()
 
                 // [중요] 2. Marca 등 일반 웹 매체는 매번 수집 (쿼터 무제한)
-                mediaSources.forEach { source ->
-                    deferredArticles.add(async {
-                        println("🔍 ${source.displayName} 수집 시작...")
-                        val scraped = if (source.internalId == "marca") {
-                            scraperService.scrapeMarcaAtm()
-                        } else if (source.internalId == "as") {
-                            scraperService.scrapeAsAtm()
-                        } else {
-                            emptyList<ScrapedArticle>()
-                        }
-                        println("✅ ${source.displayName}: ${scraped.size}개 기사 발견")
-                        scraped
-                    })
+                if (isNewsEnabled) {
+                    mediaSources.forEach { source ->
+                        deferredArticles.add(async {
+                            println("🔍 ${source.displayName} 수집 시작...")
+                            val scraped = if (source.internalId == "marca") {
+                                scraperService.scrapeMarcaAtm()
+                            } else if (source.internalId == "as") {
+                                scraperService.scrapeAsAtm()
+                            } else {
+                                emptyList<ScrapedArticle>()
+                            }
+                            println("✅ ${source.displayName}: ${scraped.size}개 기사 발견")
+                            scraped
+                        })
+                    }
+                } else {
+                    println("⏭️ 일반 뉴스 수집이 비활성화 상태입니다.")
                 }
 
                 // [중요] 3. Twitter 기자는 '로테이션' 방식으로 이번 회차의 주인공 1명만 선정
@@ -95,7 +101,7 @@ class NewsPipelineService(
                                 println("❌ [RapidAPI] @$username 오류: ${e.message}")
                             }
                         } else {
-                            println("⏭️ [RapidAPI] 오늘 한도 초과(33회), 수집을 건너뜁니다.")
+                            println("⏭️ [RapidAPI] 오늘 한도 초과(33회), 수집을 건너뜜.")
                         }
                         tweets
                     })
@@ -146,11 +152,6 @@ class NewsPipelineService(
                 scrapingSemaphore.withPermit {
                     val detail = scraperService.fetchFullContent(article.url)
                     if (detail.content.isBlank() || detail.content.length < 50) {
-                        if (detail.content.isBlank()) {
-                            // 403이나 비어있는 경우 로그는 fetchFullContent에서 이미 찍힘
-                        } else {
-                            println("⏭️ 본문 내용이 너무 짧습니다 (${detail.content.length}자). (${article.url})")
-                        }
                         return@withPermit null
                     }
                     detail
@@ -168,6 +169,12 @@ class NewsPipelineService(
                 publishedAt = article.publishedAt,
                 imageUrl = null
             )
+        }
+
+        // Gemini AI 처리 토글 체크
+        if (!isGeminiEnabled) {
+            // println("⏭️ Gemini AI 처리가 비활성화 상태입니다. 처리를 중단합니다.")
+            return
         }
 
         val geminiResult = geminiSemaphore.withPermit {
@@ -189,7 +196,7 @@ class NewsPipelineService(
                         contentKo = geminiResult.content_ko,
                         contentRaw = detailResult.content,
                         imageUrl = detailResult.imageUrl ?: article.imageUrl,
-                        category = geminiResult.category, // 새 필드 저장
+                        category = geminiResult.category,
                         isAtmRelated = true,
                         publishedAt = detailResult.publishedAt 
                     )
