@@ -70,7 +70,14 @@ class DataInitializer(private val newsSourceRepository: NewsSourceRepository) {
                 displayName = "다비드 메디나 (@medinamarca)",
                 sourceUrl = "https://x.com/medinamarca",
                 category = "JOURNALIST"
+            ),
+            NewsSource(
+                internalId = "Dvinuesa",
+                displayName = "다비드 비누에사 말박 (@Dvinuesa)",
+                sourceUrl = "https://x.com/Dvinuesa",
+                category = "JOURNALIST"
             )
+
         )
 
         sources.forEach { source ->
