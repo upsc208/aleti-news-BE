@@ -28,7 +28,11 @@ class MatchResult(
     @Column(columnDefinition = "TEXT")
     val lineup: String? = null, // 선발 명단 포맷팅 텍스트
     @Column(columnDefinition = "TEXT")
-    val cards: String? = null, // 경고 및 퇴장 정보 (예: "Koke 35' (Y), Gimenez 88' (R)")
+    val substitutions: String? = null, // 교체 정보 포맷팅 텍스트
+    @Column(columnDefinition = "TEXT")
+    val cards: String? = null, // 경고 및 퇴장 정보
+    val homeFormation: String? = null, // 홈팀 포메이션 (예: "4-4-2")
+    val awayFormation: String? = null, // 원정팀 포메이션 (예: "4-3-3")
     val possession: String? = null, // 예: "45 - 55"
     val shotsOnTarget: String? = null, // 예: "5 - 3"
     val xg: String? = null, // 예: "1.24 - 0.85"

@@ -11,7 +11,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
-import java.time.OffsetDateTime
 import java.util.concurrent.atomic.AtomicInteger
 
 @Service
@@ -26,87 +25,68 @@ class NewsPipelineService(
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.keywords}") private val keywordString: String,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.twitter}") private val isTwitterEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.news}") private val isNewsEnabled: Boolean,
-    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.gemini}") private val isGeminiEnabled: Boolean
+    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.gemini}") private val isGeminiEnabled: Boolean,
+    @org.springframework.beans.factory.annotation.Value("\${rapidapi.daily.limit}") private val twitterDailyLimit: Int
 ) {
     private val keywords = keywordString.split(",").map { it.trim().lowercase() }
-    
-    // 로테이션을 위한 인덱스 (서버 재시작 시 리셋되지만 33회 제한 내에서 충분히 작동함)
-    companion object {
-        private var journalistRotationIndex = 0
-    }
 
-    @Scheduled(cron = "0 0/15 9-23 * * *", zone = "Europe/Madrid") // 스페인 시간 09:00~23:45 사이 15분마다
-    fun scheduledFastPipeline() = runPipeline()
-
-    @Scheduled(cron = "0 0 0-8 * * *", zone = "Europe/Madrid") // 스페인 시간 00:00~08:00 사이 1시간마다
-    fun scheduledSlowPipeline() = runPipeline()
+    // 고정 15분 간격 스케줄러 (24시간 내내)
+    @Scheduled(cron = "0 0/15 * * * *")
+    fun scheduledPipeline() = runPipeline()
 
     fun runPipeline() = runBlocking {
         val scannedCount = AtomicInteger(0)
         val aiProcessedCount = AtomicInteger(0)
         val twitterApiCallCount = AtomicInteger(0)
         val startTime = System.currentTimeMillis()
-        val geminiSemaphore = Semaphore(3)
-        val scrapingSemaphore = Semaphore(2) // 상세 페이지 수집은 더 보수적으로 (동시 2개만)
+        val geminiSemaphore = Semaphore(2)
+        val scrapingSemaphore = Semaphore(2)
 
         try {
             coroutineScope {
-                // 1. 활성 소스 로드
                 val activeSources = newsSourceRepository.findAllByIsActiveTrue()
                 val journalists = activeSources.filter { it.category != "MEDIA" }
                 val mediaSources = activeSources.filter { it.category == "MEDIA" }
                 
                 val initialTwitterUsage = if (isTwitterEnabled) twitterApiService.getTodayApiUsage() else 0
-                println("🚀 파이프라인 시작 (Twitter 활성여부: $isTwitterEnabled, 오늘 Twitter API 사용: $initialTwitterUsage/33)")
+                println("🚀 파이프라인 시작 (Twitter: $isTwitterEnabled, 오늘 Twitter API 사용: $initialTwitterUsage/$twitterDailyLimit)")
 
                 val deferredArticles = mutableListOf<Deferred<List<ScrapedArticle>>>()
 
-                // [중요] 2. Marca 등 일반 웹 매체는 매번 수집 (쿼터 무제한)
+                // 1. 일반 웹 매체 수집
                 if (isNewsEnabled) {
                     mediaSources.forEach { source ->
                         deferredArticles.add(async {
-                            println("🔍 ${source.displayName} 수집 시작...")
-                            val scraped = if (source.internalId == "marca") {
-                                scraperService.scrapeMarcaAtm()
-                            } else if (source.internalId == "as") {
-                                scraperService.scrapeAsAtm()
-                            } else {
-                                emptyList<ScrapedArticle>()
+                            val scraped = when (source.internalId) {
+                                "marca" -> scraperService.scrapeMarcaAtm()
+                                "as" -> scraperService.scrapeAsAtm()
+                                else -> emptyList()
                             }
-                            println("✅ ${source.displayName}: ${scraped.size}개 기사 발견")
                             scraped
                         })
                     }
-                } else {
-                    println("⏭️ 일반 뉴스 수집이 비활성화 상태입니다.")
                 }
 
-                // [중요] 3. Twitter 기자는 '로테이션' 방식으로 이번 회차의 주인공 1명만 선정
+                // 2. Twitter 기자 전수 조사 (로테이션 제거)
                 if (isTwitterEnabled && journalists.isNotEmpty()) {
-                    val targetJournalist = journalists[journalistRotationIndex % journalists.size]
-                    journalistRotationIndex++
-                    
-                    deferredArticles.add(async {
-                        val username = targetJournalist.internalId
-                        println("🎯 이번 회차 트위터 타겟: @$username (순번: ${journalistRotationIndex})")
-                        
-                        var tweets = emptyList<ScrapedArticle>()
-                        
-                        // RapidAPI 한도 체크
-                        if (initialTwitterUsage < 33) {
-                            try {
-                                tweets = twitterApiService.getTweets(username)
-                                if (tweets.isNotEmpty()) twitterApiCallCount.incrementAndGet()
-                            } catch (e: Exception) {
-                                println("❌ [RapidAPI] @$username 오류: ${e.message}")
+                    journalists.forEach { journalist ->
+                        deferredArticles.add(async {
+                            val username = journalist.internalId
+                            var tweets = emptyList<ScrapedArticle>()
+                            
+                            // 매번 잔여 쿼터 확인
+                            val currentUsage = initialTwitterUsage + twitterApiCallCount.get()
+                            if (currentUsage < twitterDailyLimit) {
+                                try {
+                                    tweets = twitterApiService.getTweets(username)
+                                    if (tweets.isNotEmpty()) twitterApiCallCount.incrementAndGet()
+                                } catch (e: Exception) {
+                                    println("❌ [RapidAPI] @$username 오류: ${e.message}")
+                                }
                             }
-                        } else {
-                            println("⏭️ [RapidAPI] 오늘 한도 초과(33회), 수집을 건너뜜.")
-                        }
-                        tweets
-                    })
-                } else if (!isTwitterEnabled) {
-                    println("⏭️ 트위터 수집이 비활성화 상태입니다.")
+                            tweets
+                        })
+                    }
                 }
 
                 val allScraped = deferredArticles.awaitAll().flatten()
@@ -114,7 +94,7 @@ class NewsPipelineService(
                 val sortedArticles = uniqueArticles.sortedBy { it.publishedAt }
                 scannedCount.set(sortedArticles.size)
 
-                // 4. 병렬 처리 및 저장
+                // 3. 병렬 처리 및 저장
                 sortedArticles.map { article ->
                     async {
                         processSingleArticle(article, aiProcessedCount, geminiSemaphore, scrapingSemaphore)
@@ -136,9 +116,7 @@ class NewsPipelineService(
     ) {
         if (newsArticleRepository.existsByOriginalUrl(article.url)) return
 
-        val isTwitter = article.sourceName.contains("X (", ignoreCase = true) || 
-                        article.articleType == com.atleti.news.entity.ArticleType.SNS_POST
-        
+        val isTwitter = article.articleType == com.atleti.news.entity.ArticleType.SNS_POST
         val isDedicatedMedia = article.sourceName == "Marca" || article.sourceName == "AS"
 
         if (!isTwitter && !isDedicatedMedia) {
@@ -146,41 +124,22 @@ class NewsPipelineService(
             if (keywords.none { lowerTitle.contains(it) }) return
         }
 
-        val detailResult = if (article.sourceName == "Marca" || article.sourceName == "AS") {
+        val detailResult = if (isDedicatedMedia) {
             try {
-                // 수집 세마포어 적용 (너무 많은 동시 요청 방지)
                 scrapingSemaphore.withPermit {
                     val detail = scraperService.fetchFullContent(article.url)
-                    if (detail.content.isBlank() || detail.content.length < 50) {
-                        return@withPermit null
-                    }
-                    detail
+                    if (detail.content.isBlank() || detail.content.length < 50) null else detail
                 } ?: return
-            } catch (e: Exception) {
-                println("⏭️ 상세 정보 추출 실패로 수집을 건너뜜: ${article.url}")
-                return
-            }
+            } catch (e: Exception) { return }
         } else {
-            // 트위터 등의 경우 title이 곧 본문이 됨
             if (article.title.isBlank()) return
-            ArticleDetail(
-                content = article.title,
-                authorName = article.authorName ?: "Unknown",
-                publishedAt = article.publishedAt,
-                imageUrl = null
-            )
+            ArticleDetail(content = article.title, authorName = article.authorName ?: "Unknown", publishedAt = article.publishedAt, imageUrl = null)
         }
 
-        // Gemini AI 처리 토글 체크
-        if (!isGeminiEnabled) {
-            // println("⏭️ Gemini AI 처리가 비활성화 상태입니다. 처리를 중단합니다.")
-            return
-        }
+        if (!isGeminiEnabled) return
 
         val geminiResult = geminiSemaphore.withPermit {
-            // 지나치게 긴 본문은 잘라서 보냅니다 (JSON 파싱 에러 방지)
-            val limitedContent = detailResult.content.take(10000)
-            geminiService.processArticle(article.title, limitedContent, article.sourceName, skipValidation = true)
+            geminiService.processArticle(article.title, detailResult.content.take(10000), article.sourceName, skipValidation = true)
         }
 
         if (geminiResult != null && (isTwitter || geminiResult.is_atm_related)) {
@@ -208,21 +167,11 @@ class NewsPipelineService(
         }
     }
 
-    private fun saveLog(
-        status: CollectionStatus,
-        scanned: Int,
-        aiProcessed: Int,
-        apiCallCount: Int,
-        startTime: Long,
-        errorMsg: String? = null
-    ) {
+    private fun saveLog(status: CollectionStatus, scanned: Int, aiProcessed: Int, apiCallCount: Int, startTime: Long, errorMsg: String? = null) {
         collectionLogRepository.save(
             CollectionLog(
-                status = status,
-                scannedCount = scanned,
-                aiProcessedCount = aiProcessed,
-                twitterApiCallCount = apiCallCount,
-                errorMsg = errorMsg,
+                status = status, scannedCount = scanned, aiProcessedCount = aiProcessed,
+                twitterApiCallCount = apiCallCount, errorMsg = errorMsg,
                 executionTimeMs = System.currentTimeMillis() - startTime
             )
         )
