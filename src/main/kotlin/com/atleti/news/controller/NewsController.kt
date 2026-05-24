@@ -67,16 +67,16 @@ class NewsController(
         
         return NewsDetailResponse(
             id = article.id!!,
-            titleKo = article.titleKo,
-            summaryKo = article.summaryKo,
-            contentKo = article.contentKo,
-            imageUrl = article.imageUrl,
+            titleKo = article.titleKo ?: "제목 없음",
+            summaryKo = article.summaryKo ?: "", // null 대신 빈 문자열
+            contentKo = article.contentKo ?: "본문 내용이 없습니다.",
+            imageUrl = article.imageUrl, // 이미지는 프론트에서 null 체크가 필수적이므로 유지
             sourceName = article.sourceName,
-            authorName = article.authorName,
+            authorName = article.authorName ?: article.sourceName,
             originalUrl = article.originalUrl,
             publishedAt = article.publishedAt,
             articleType = article.articleType,
-            category = article.category
+            category = article.category ?: "[기타]"
         )
     }
 
