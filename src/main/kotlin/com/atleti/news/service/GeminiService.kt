@@ -26,6 +26,67 @@ class GeminiService(
         return callGeminiApi(title, fullContent, sourceName, skipValidation = skipValidation)
     }
 
+    suspend fun processYoutubeTranscript(transcript: String, sourceName: String, spainDate: String): GeminiResponse? {
+        if (apiKey == "NO_KEY" || apiKey.isBlank()) {
+            println("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
+            return null
+        }
+
+        val prompt = """
+            You are an expert Atletico Madrid journalist. 
+            Analyze the following Spanish YouTube transcript and respond ONLY in valid JSON.
+
+            CRITICAL RULES:
+            1. Filter out all "noise" like greetings, sponsor mentions, chat readings, and non-football related jokes.
+            2. Focus ONLY on news related to Atletico Madrid (players, coach, transfers, match analysis, exclusive info).
+            3. If the content is empty or unrelated to Atletico Madrid, set "is_atm_related" to false.
+
+            [Transcript Content]
+            $transcript
+
+            Instructions:
+            1. 'is_atm_related': true/false.
+            2. 'category': Always return "라이브요약".
+            3. 'title_ko': Create a title in the EXACT format: "Ruben Uria) $spainDate 라이브 내용('간략한 핵심 내용')".
+               - Use the provided date: $spainDate.
+               - '간략한 핵심 내용' MUST be extremely concise (Max 10-15 characters). Pick ONLY the single most important topic or two very short ones (e.g., "훌리안 이적설", "갤러거 협상 중"). Do not list everything.
+            4. 'summary_ko': Provide a 3-5 line concise summary. Use clear paragraph breaks (\n\n) between logical points for readability. Do not merge sentences into a single block.
+            5. 'content_ko': Provide a detailed "Core Report" in Korean. 
+               - CRITICAL: DO NOT use '#' headers or excessive bolding ('**'). 
+               - Use clean list markers like '-', '•', or emojis/icons.
+               - Use brackets (e.g., [이적 시장], [선수 분석]) to categorize sections.
+               - Ensure wide spacing between paragraphs so it's easy to read on mobile.
+               - Elaborate on the key points, who said what, and why it matters. This should be the longest part.
+
+            JSON structure:
+            {
+              "is_atm_related": true,
+              "category": "라이브요약",
+              "title_ko": "catchy title",
+              "summary_ko": "concise summary",
+              "content_ko": "detailed core report"
+            }
+        """.trimIndent()
+
+        return try {
+            val requestBody = mapOf(
+                "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
+            )
+
+            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
+
+            webClient.post()
+                .uri(url)
+                .bodyValue(requestBody)
+                .retrieve()
+                .awaitBody<Map<String, Any>>()
+                .let { parseGeminiResponse(it) }
+        } catch (e: Exception) {
+            println("❌ Gemini 유튜브 처리 오류: ${e.message}")
+            null
+        }
+    }
+
     private suspend fun callGeminiApi(title: String, fullContent: String, sourceName: String, retryCount: Int = 0, skipValidation: Boolean = false): GeminiResponse? {
         if (retryCount == 0) delay(1000)
 

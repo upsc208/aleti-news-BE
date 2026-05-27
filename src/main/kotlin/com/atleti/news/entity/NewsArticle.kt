@@ -3,7 +3,7 @@ package com.atleti.news.entity
 import jakarta.persistence.*
 import java.time.OffsetDateTime
 
-enum class ArticleType { WEB_ARTICLE, SNS_POST }
+enum class ArticleType { WEB_ARTICLE, SNS_POST, YOUTUBE }
 
 @Entity
 @Table(
@@ -51,6 +51,9 @@ class NewsArticle(
 
     @Column(name = "is_atm_related", nullable = false)
     val isAtmRelated: Boolean = false,
+
+    @Column(name = "view_count", nullable = false)
+    var viewCount: Long = 0,
 
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: OffsetDateTime = OffsetDateTime.now()

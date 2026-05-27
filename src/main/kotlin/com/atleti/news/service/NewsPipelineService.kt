@@ -19,20 +19,42 @@ class NewsPipelineService(
     private val twitterApiService: TwitterApiService,
     private val nitterScraperService: NitterScraperService,
     private val geminiService: GeminiService,
+    private val youtubeService: YoutubeService,
     private val newsArticleRepository: NewsArticleRepository,
     private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
+    private val articleViewLogRepository: com.atleti.news.repository.ArticleViewLogRepository,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.keywords}") private val keywordString: String,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.twitter}") private val isTwitterEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.news}") private val isNewsEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.gemini}") private val isGeminiEnabled: Boolean,
+    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.youtube}") private val isYoutubeEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${rapidapi.daily.limit}") private val twitterDailyLimit: Int
-) {
+    ) {
     private val keywords = keywordString.split(",").map { it.trim().lowercase() }
 
     // 고정 15분 간격 스케줄러 (24시간 내내)
     @Scheduled(cron = "0 0/15 * * * *")
     fun scheduledPipeline() = runPipeline()
+
+    // 유튜브는 1시간에 한 번 정도만 체크 (매번 하면 SerpApi 쿼터 낭비)
+    @Scheduled(cron = "0 5 * * * *")
+    fun scheduledYoutubePipeline() = runBlocking {
+        if (!isYoutubeEnabled) return@runBlocking
+        println("📺 유튜브 파이프라인 시작...")
+        youtubeService.runYoutubePipeline("@rubenuriagonzalez")
+    }
+
+    // 매일 새벽 4시에 오래된 조회 로그 청소 (조회수 중복 방지용)
+    @Scheduled(cron = "0 0 4 * * *")
+    @org.springframework.transaction.annotation.Transactional
+    fun cleanOldData() {
+        // 조회수 중복 방지 로그는 1일치만 남기고 삭제 (DB 용량 절약 및 개인정보 관리)
+        val logCutoffDate = java.time.OffsetDateTime.now().minusDays(1)
+        articleViewLogRepository.deleteByViewedAtBefore(logCutoffDate)
+        println("🧹 1일 경과 조회 로그를 청소했습니다.")
+    }
+
 
     fun runPipeline() = runBlocking {
         val scannedCount = AtomicInteger(0)

@@ -21,6 +21,7 @@ class NewsController(
     private val newsArticleRepository: NewsArticleRepository,
     private val newsSourceRepository: com.atleti.news.repository.NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
+    private val articleViewLogRepository: com.atleti.news.repository.ArticleViewLogRepository,
     private val newsPipelineService: NewsPipelineService
 ) {
 
@@ -31,12 +32,21 @@ class NewsController(
         @RequestParam(defaultValue = "10") size: Int,
         @RequestParam(required = false) sources: List<String>?,
         @RequestParam(required = false) category: String?,
-        @RequestParam(required = false) search: String?
+        @RequestParam(required = false) search: String?,
+        @RequestParam(defaultValue = "false") isHyped: Boolean
     ): Page<NewsListResponse> {
-        val pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending())
-        
         val lowerSources = sources?.map { it.lowercase() }
-        val articles = newsArticleRepository.searchNews(lowerSources, category, search, pageable)
+        
+        val articles = if (isHyped) {
+            // 인기 기사: 최근 3일간 조회수 30회 이상인 기사 (조회수 높은 순 -> 최신순 정렬)
+            val pageable = PageRequest.of(page, size, Sort.by("viewCount").descending().and(Sort.by("publishedAt").descending()))
+            val threeDaysAgo = OffsetDateTime.now().minusDays(3)
+            newsArticleRepository.searchHypedNews(30L, threeDaysAgo, lowerSources, category, pageable)
+        } else {
+            // 일반 목록: 최신순 정렬
+            val pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending())
+            newsArticleRepository.searchNews(lowerSources, category, search, pageable)
+        }
 
         return articles.map { 
             NewsListResponse(
@@ -48,7 +58,8 @@ class NewsController(
                 articleType = it.articleType,
                 summaryKo = it.summaryKo,
                 category = it.category,
-                imageUrl = it.imageUrl
+                imageUrl = it.imageUrl,
+                viewCount = it.viewCount
             )
         }
     }
@@ -61,22 +72,37 @@ class NewsController(
 
     @Operation(summary = "뉴스 상세 조회 (전체 포함)", description = "특정 기사의 상세 정보(이미지, 본문 포함)를 가져옵니다.")
     @GetMapping("/{id}")
-    fun getNewsDetail(@PathVariable id: Long): NewsDetailResponse {
+    fun getNewsDetail(@PathVariable id: Long, request: jakarta.servlet.http.HttpServletRequest): NewsDetailResponse {
         val article = newsArticleRepository.findById(id)
             .orElseThrow { NoSuchElementException("해당 기사를 찾을 수 없습니다. ID: $id") }
+        
+        // 조회수 증가 로직 (IP 기반 24시간 중복 방지)
+        val ip = request.getHeader("X-Forwarded-For")?.split(",")?.firstOrNull()?.trim() 
+            ?: request.remoteAddr
+        
+        val isAlreadyViewed = articleViewLogRepository.existsByArticleIdAndIpAddressAndViewedAtAfter(
+            id, ip, OffsetDateTime.now().minusDays(1)
+        )
+
+        if (!isAlreadyViewed) {
+            article.viewCount += 1
+            newsArticleRepository.save(article)
+            articleViewLogRepository.save(com.atleti.news.entity.ArticleViewLog(articleId = id, ipAddress = ip))
+        }
         
         return NewsDetailResponse(
             id = article.id!!,
             titleKo = article.titleKo ?: "제목 없음",
-            summaryKo = article.summaryKo ?: "", // null 대신 빈 문자열
+            summaryKo = article.summaryKo ?: "", 
             contentKo = article.contentKo ?: "본문 내용이 없습니다.",
-            imageUrl = article.imageUrl, // 이미지는 프론트에서 null 체크가 필수적이므로 유지
+            imageUrl = article.imageUrl,
             sourceName = article.sourceName,
             authorName = article.authorName ?: article.sourceName,
             originalUrl = article.originalUrl,
             publishedAt = article.publishedAt,
             articleType = article.articleType,
-            category = article.category ?: "[기타]"
+            category = article.category ?: "[기타]",
+            viewCount = article.viewCount
         )
     }
 
@@ -109,7 +135,8 @@ data class NewsListResponse(
     val articleType: ArticleType,
     val summaryKo: String?,
     val category: String?,
-    val imageUrl: String?
+    val imageUrl: String?,
+    val viewCount: Long
 )
 
 /**
@@ -126,5 +153,6 @@ data class NewsDetailResponse(
     val originalUrl: String,
     val publishedAt: OffsetDateTime?,
     val articleType: ArticleType,
-    val category: String?
+    val category: String?,
+    val viewCount: Long
 )
