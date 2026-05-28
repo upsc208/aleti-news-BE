@@ -41,6 +41,55 @@ class GeminiService(
             2. Focus ONLY on news related to Atletico Madrid (players, coach, transfers, match analysis, exclusive info).
             3. If the content is empty or unrelated to Atletico Madrid, set "is_atm_related" to false.
 
+            [Naming Convention - CRITICAL]
+            Regardless of the source language (Spanish or English), ALWAYS use the following Korean names for these players/people:
+            - Antoine Griezmann: 앙투안 그리즈만
+            - Julián Álvarez: 훌리안 알바레스
+            - Marc Pubill: 마르크 푸빌
+            - Alexander Sørloth: 알렉산더 쇠를로트
+            - Robin Le Normand: 로빈 르 노르망
+            - Conor Gallagher: 코너 갤러거
+            - David Hancko: 다비드 한츠코
+            - Clement Lenglet: 클레망 랑글레
+            - Juan Musso: 후안 무소
+            - Diego Simeone: 디에고 시메오네
+            - Mateu Alemany: 마테우 알레마니
+            - Marcos Llorente: 마르코스 요렌테
+            - Jan Oblak: 얀 오블락
+            - Koke: 코케
+            - Jose Maria Gimenez: 호세 마리아 히메네스
+            - Pablo Barrios: 파블로 바리오스
+            - Thiago Almada: 티아고 알마다
+            - Johnny Cardoso: 조니 카르도소
+            - Ademola Lookman: 아데몰라 룩먼
+            - Giacomo Raspadori: 자코모 라스파도리
+            - Álex Baena: 알렉스 바에나
+            - Matteo Ruggeri: 마테오 루제리
+            - Nicolás González: 니콜라스 곤살레스
+            - Nahuel Molina: 나우엘 몰리나
+            - Rodrigo Mendoza: 로드리고 멘도사
+            - Obed Vargas: 오베드 바르가스
+            - Giuliano Simeone: 줄리아노 시메오네
+            - Miguel Llorente Cubo: 미켈 쿠보
+            - Javi Boñar: 하비 보냐르
+            - Javi Morcillo: 하비 모르시요
+            - Rayane Belaid: 리야드 벨라이드
+            - Adrián Niño: 아드리안 니뇨
+            - Salim El Jebari: 살림 엘 제바리
+            - Iker Luque: 이케르 루케
+            - Diego Bri: 디에고 브리
+            - Jorge Mota: 호르헤 모타
+            - Abde Raihani: 압데 라이하니
+            - Aitor Gismera: 아이토르 기스메라
+            - Gerónimo Spina: 헤로니모 스피나
+            - Ilias Kostis: 일리아스 코스티스
+
+            General Spanish/English-to-Korean rules:
+            1. 'J' at the beginning of names -> 'ㅎ' (e.g., Juan -> 후안, Julian -> 훌리안).
+            2. 'LL' -> 'ㄹ' or 'y' sound (e.g., Llorente -> 요렌테, Villar -> 비야르).
+            3. 'G' before 'e' or 'i' -> 'ㅎ' (e.g., Gimenez -> 히메네스).
+            4. Do not use English-style phonetics for Spanish names (e.g., NOT '그리에이츠만', NOT '줄리안').
+
             [Transcript Content]
             $transcript
 
@@ -104,6 +153,55 @@ class GeminiService(
             1. ONLY use the information provided in the [Content] section.
             2. DO NOT use your internal knowledge to invent details (like players who left the team years ago or players from other leagues) if they are not in the text.
             3. If the [Content] is empty, very short, or entirely unrelated to Atletico Madrid, set "is_atm_related" to false and leave other fields empty.
+
+            [Naming Convention - CRITICAL]
+            Regardless of the source language (Spanish or English), ALWAYS use the following Korean names for these players/people:
+            - Antoine Griezmann: 앙투안 그리즈만
+            - Julián Álvarez: 훌리안 알바레스
+            - Marc Pubill: 마르크 푸빌
+            - Alexander Sørloth: 알렉산더 쇠를로트
+            - Robin Le Normand: 로빈 르 노르망
+            - Conor Gallagher: 코너 갤러거
+            - David Hancko: 다비드 한츠코
+            - Clement Lenglet: 클레망 랑글레
+            - Juan Musso: 후안 무소
+            - Diego Simeone: 디에고 시메오네
+            - Mateu Alemany: 마테우 알레마니
+            - Marcos Llorente: 마르코스 요렌테
+            - Jan Oblak: 얀 오블락
+            - Koke: 코케
+            - Jose Maria Gimenez: 호세 마리아 히메네스
+            - Pablo Barrios: 파블로 바리오스
+            - Thiago Almada: 티아고 알마다
+            - Johnny Cardoso: 조니 카르도소
+            - Ademola Lookman: 아데몰라 룩먼
+            - Giacomo Raspadori: 자코모 라스파도리
+            - Álex Baena: 알렉스 바에나
+            - Matteo Ruggeri: 마테오 루제리
+            - Nicolás González: 니콜라스 곤살레스
+            - Nahuel Molina: 나우엘 몰리나
+            - Rodrigo Mendoza: 로드리고 멘도사
+            - Obed Vargas: 오베드 바르가스
+            - Giuliano Simeone: 줄리아노 시메오네
+            - Miguel Llorente Cubo: 미켈 쿠보
+            - Javi Boñar: 하비 보냐르
+            - Javi Morcillo: 하비 모르시요
+            - Rayane Belaid: 리야드 벨라이드
+            - Adrián Niño: 아드리안 니뇨
+            - Salim El Jebari: 살림 엘 제바리
+            - Iker Luque: 이케르 루케
+            - Diego Bri: 디에고 브리
+            - Jorge Mota: 호르헤 모타
+            - Abde Raihani: 압데 라이하니
+            - Aitor Gismera: 아이토르 기스메라
+            - Gerónimo Spina: 헤로니모 스피나
+            - Ilias Kostis: 일리아스 코스티스
+
+            General Spanish/English-to-Korean rules:
+            1. 'J' at the beginning of names -> 'ㅎ' (e.g., Juan -> 후안, Julian -> 훌리안).
+            2. 'LL' -> 'ㄹ' or 'y' sound (e.g., Llorente -> 요렌테, Villar -> 비야르).
+            3. 'G' before 'e' or 'i' -> 'ㅎ' (e.g., Gimenez -> 히메네스).
+            4. Do not use English-style phonetics for Spanish names (e.g., NOT '그리에이츠만', NOT '줄리안').
 
             [Source]
             $sourceName
