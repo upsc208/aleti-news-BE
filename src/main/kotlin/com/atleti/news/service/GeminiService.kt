@@ -38,9 +38,22 @@ class GeminiService(
             Analyze the following Spanish YouTube transcript and respond ONLY in valid JSON.
 
             CRITICAL RULES:
-            1. Filter out all "noise" like greetings, sponsor mentions, chat readings, and non-football related jokes.
-            2. Focus ONLY on news related to Atletico Madrid (players, coach, transfers, match analysis, exclusive info).
+            1. Filter out only pure "noise": greetings, sponsor mentions, channel promotion, chat small talk, and non-football jokes.
+            2. EVERYTHING ELSE must be covered. Do NOT compress the stream into a few highlights — translate ALL substantive football content (players, coach, transfers, match analysis, panel discussions, exclusive info), following the chronological flow of the stream.
             3. If the content is empty or unrelated to Atletico Madrid, set "is_atm_related" to false.
+
+            [Faithful Translation - MOST IMPORTANT]
+            This is a STRICT literal translation task (직독직해). You are a translator, NOT an analyst or reporter.
+            1. Translate ONLY what is literally said in the [Transcript Content]. Do NOT add, infer, embellish, or "improve" anything.
+            2. NEVER use your own background knowledge to invent facts. Do NOT decide who is on the team, who left, or who is being signed. Just translate the words as they are.
+            3. If a player is only mentioned in passing, translate exactly that — do NOT turn a passing mention into a "transfer target" or "signing" story that the speaker never claimed.
+            4. Do NOT connect unrelated sentences into a fabricated narrative. Keep each statement's original meaning and scope.
+            5. If something is ambiguous or you are unsure, translate it plainly and literally rather than guessing an interpretation.
+            6. Absolutely no hallucination. It is far better to translate something dryly than to invent a claim the speaker did not make.
+
+            [Speech Style - CRITICAL]
+            - 'content_ko': Write as a DIRECT TRANSLATION of what Ruben Uria actually says, as if he is speaking. Sentence endings MUST use Korean plain style (평어체): "~했다", "~이다", "~라고 본다", "~어떤가", "~준비했다". NEVER use formal endings here. Keep his first-person voice and rhetorical questions (e.g., "알마다의 사우디 이적설 관련 내용을 준비했다", "패널분들의 의견은 어떤가").
+            - 'summary_ko': This is the AI's own recap for the reader, NOT his direct speech. Use polite formal endings (존댓말: "~했습니다", "~입니다", "~전망입니다").
 
             [Naming Convention - CRITICAL]
             Regardless of the source language (Spanish or English), ALWAYS use the following Korean names for these players/people:
@@ -100,13 +113,15 @@ class GeminiService(
             3. 'title_ko': Create a title in the EXACT format: "Ruben Uria) $spainDate 라이브 내용('간략한 핵심 내용')".
                - Use the provided date: $spainDate.
                - '간략한 핵심 내용' MUST be extremely concise (Max 10-15 characters). Pick ONLY the single most important topic or two very short ones (e.g., "훌리안 이적설", "갤러거 협상 중"). Do not list everything.
-            4. 'summary_ko': Provide a 3-5 line concise summary. Use clear paragraph breaks (\n\n) between logical points for readability. Do not merge sentences into a single block.
-            5. 'content_ko': Provide a detailed "Core Report" in Korean. 
-               - CRITICAL: DO NOT use '#' headers or excessive bolding ('**'). 
+            4. 'summary_ko': Provide a 3-5 line concise summary. Use clear paragraph breaks (\n\n) between logical points for readability. Do not merge sentences into a single block. Use polite formal endings (존댓말: ~했습니다, ~입니다) — this is the AI's recap, not his direct speech.
+            5. 'content_ko': Provide a thorough, near-full translation of the stream in Korean (NOT just highlights).
+               - Cover ALL substantive football content in the order it was said. Only skip pure noise (greetings, sponsors, chat small talk, jokes). When in doubt, include it.
+               - CRITICAL: DO NOT use '#' headers or excessive bolding ('**').
                - Use clean list markers like '-', '•', or emojis/icons.
                - Use brackets (e.g., [이적 시장], [선수 분석]) to categorize sections.
                - Ensure wide spacing between paragraphs so it's easy to read on mobile.
-               - Elaborate on the key points, who said what, and why it matters. This should be the longest part.
+               - Convey what Ruben Uria and the panel actually said, in his speaking voice. This should be the longest part.
+               - CRITICAL: End sentences in plain style as if directly transcribing his words (평어체: ~했다, ~준비했다, ~라고 본다, ~어떤가). NEVER use "~했습니다/~입니다".
 
             JSON structure:
             {
@@ -133,6 +148,91 @@ class GeminiService(
                 .let { parseGeminiResponse(it) }
         } catch (e: Exception) {
             println("❌ Gemini 유튜브 처리 오류: ${e.message}")
+            null
+        }
+    }
+
+    // 여러 최신 뉴스를 종합해 헤드라인 0~2개를 생성 (뉴스 헤드라인/속보 형태)
+    suspend fun generateHeadlines(newsLines: List<String>, existingHeadlines: List<String>): List<String>? {
+        if (apiKey == "NO_KEY" || apiKey.isBlank()) {
+            println("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
+            return null
+        }
+        if (newsLines.isEmpty()) return emptyList()
+
+        val newsBlock = newsLines.joinToString("\n")
+        val existingBlock = if (existingHeadlines.isEmpty()) "(none)" else existingHeadlines.joinToString("\n")
+
+        val prompt = """
+            You are the front-page editor for an Atletico Madrid news feed.
+            Below are the LATEST news items collected since the previous briefing.
+            From them, select the MOST IMPORTANT stories and write AT MOST 4 short Korean headlines (fewer is fine).
+
+            RULES:
+            1. These headlines are a live "breaking news" ticker. Cover only the most important / newest developments — ignore minor or repetitive items.
+            2. If nothing is genuinely important or newsworthy, return an EMPTY list. Do NOT invent or pad headlines just to fill space. It is perfectly fine to return zero headlines. Only include an item if it is genuinely worth a headline — do not add weak items just to reach 4.
+            3. Return between 0 and 4 headlines, chosen strictly by importance. List the MOST important first.
+            4. [Importance priority] Atletico fans care most about TRANSFERS. Rank items in this priority order:
+               (a) Confirmed official signings or departures (영입/방출 오피셜, 공식발표).
+               (b) Transfer news or rumors (이적설), especially when reported by a well-known, credible journalist/outlet (e.g., Fabrizio Romano, Marca, AS). Weigh the [출처] when judging credibility.
+               (c) Other major club news (injuries, lineups, match results, interviews).
+               Prefer transfer-related items over non-transfer items when choosing what to include.
+            5. Each headline: informative Korean newspaper style, target 30-50 characters (max 50). Long enough to carry WHO + WHAT with a concrete detail (club, fee, source, status). Avoid one-word or overly terse headlines. NO ending punctuation.
+            6. Use plain style endings (평어체) or noun-ending style, and include a concrete detail. e.g., "훌리안 알바레스, 사우디 클럽의 대형 이적 제안 공개 거부", "시메오네 감독, 2028년까지 재계약 최종 합의 임박".
+            7. DO NOT repeat or paraphrase any of the [Already Posted Headlines]. Produce genuinely new angles only.
+
+            [Strict Grounding - MOST IMPORTANT]
+            8. You are RE-HEADLINING existing news items, NOT writing new stories. Every headline MUST be directly and fully supported by ONE specific item in [Latest News].
+            9. Do NOT change the factual meaning of an item. Never turn a goal, injury, quote, or match report into a transfer/signing story (or vice versa).
+            10. NEVER use outside or background knowledge. Do NOT assume who currently plays for which club, who is a transfer target, or any squad detail not stated in the item itself. Example of a FORBIDDEN hallucination: an item mentions a CURRENT Atletico player, and you invent that Atletico is "trying to sign him" — that is completely wrong. Only restate what the item actually says.
+            11. Do NOT merge multiple items into a single fabricated narrative. One headline reflects one item's actual content.
+            12. If you cannot write a headline that faithfully matches an item, DROP it. Fewer (or zero) accurate headlines is always better than one distorted or invented one.
+
+            [Already Posted Headlines]
+            $existingBlock
+
+            [Latest News]
+            $newsBlock
+
+            Respond ONLY in valid JSON (headlines may be an empty array):
+            {
+              "headlines": ["headline 1", "headline 2"]
+            }
+        """.trimIndent()
+
+        return try {
+            val requestBody = mapOf(
+                "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
+            )
+            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
+
+            webClient.post()
+                .uri(url)
+                .bodyValue(requestBody)
+                .retrieve()
+                .awaitBody<Map<String, Any>>()
+                .let { parseHeadlineResponse(it) }
+        } catch (e: Exception) {
+            println("❌ Gemini 헤드라인 생성 오류: ${e.message}")
+            null
+        }
+    }
+
+    private fun parseHeadlineResponse(response: Map<String, Any>): List<String>? {
+        return try {
+            val candidates = response["candidates"] as? List<*> ?: return null
+            val firstCandidate = candidates.firstOrNull() as? Map<*, *> ?: return null
+            val content = firstCandidate["content"] as? Map<*, *> ?: return null
+            val parts = content["parts"] as? List<*> ?: return null
+            val firstPart = parts.firstOrNull() as? Map<*, *> ?: return null
+            val text = (firstPart["text"] as? String)?.trim() ?: return null
+
+            var cleanJson = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            cleanJson = cleanJson.replace(Regex("\\\\(?![u\"\\\\/bfnrt])"), "")
+
+            objectMapper.readValue<HeadlineResponse>(cleanJson).headlines
+        } catch (e: Exception) {
+            println("⚠️ 헤드라인 JSON 파싱 실패: ${e.message}")
             null
         }
     }

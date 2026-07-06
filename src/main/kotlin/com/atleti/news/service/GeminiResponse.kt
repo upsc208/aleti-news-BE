@@ -21,3 +21,9 @@ data class GeminiResponse(
     @JsonProperty("summary_ko")
     val summaryKo: String?
 )
+
+// 여러 뉴스를 종합해 만든 헤드라인 목록 응답
+data class HeadlineResponse(
+    @JsonProperty("headlines")
+    val headlines: List<String> = emptyList()
+)

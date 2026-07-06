@@ -190,5 +190,6 @@ data class ScrapedArticle(
     val sourceName: String,
     val articleType: ArticleType,
     val authorName: String?,
-    val publishedAt: java.time.OffsetDateTime = java.time.OffsetDateTime.now(java.time.ZoneId.of("Asia/Seoul"))
+    val publishedAt: java.time.OffsetDateTime = java.time.OffsetDateTime.now(java.time.ZoneId.of("Asia/Seoul")),
+    val isRetweet: Boolean = false
 )

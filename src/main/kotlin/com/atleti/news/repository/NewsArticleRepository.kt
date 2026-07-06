@@ -46,4 +46,16 @@ interface NewsArticleRepository : JpaRepository<NewsArticle, Long> {
         @Param("category") category: String?,
         pageable: Pageable
     ): Page<NewsArticle>
+
+    // 헤드라인 브리핑용: 커서(직전 생성 시각) 이후 수집된 ATM 관련 기사만 최신순으로
+    @Query("""
+        SELECT n FROM NewsArticle n
+        WHERE n.createdAt >= :since
+          AND n.isAtmRelated = true
+        ORDER BY n.createdAt DESC
+    """)
+    fun findRecentForBriefing(
+        @Param("since") since: java.time.OffsetDateTime,
+        pageable: Pageable
+    ): List<NewsArticle>
 }

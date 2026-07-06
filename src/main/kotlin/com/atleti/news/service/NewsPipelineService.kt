@@ -20,6 +20,7 @@ class NewsPipelineService(
     private val nitterScraperService: NitterScraperService,
     private val geminiService: GeminiService,
     private val youtubeService: YoutubeService,
+    private val headlineService: HeadlineService,
     private val newsArticleRepository: NewsArticleRepository,
     private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
@@ -29,6 +30,7 @@ class NewsPipelineService(
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.news}") private val isNewsEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.gemini}") private val isGeminiEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.youtube}") private val isYoutubeEnabled: Boolean,
+    @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.headline}") private val isHeadlineEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${rapidapi.daily.limit}") private val twitterDailyLimit: Int
     ) {
     private val keywords = keywordString.split(",").map { it.trim().lowercase() }
@@ -43,6 +45,15 @@ class NewsPipelineService(
         if (!isYoutubeEnabled) return@runBlocking
         println("📺 유튜브 파이프라인 시작...")
         youtubeService.runYoutubePipeline("@rubenuriagonzalez")
+    }
+
+    // 헤드라인 브리핑: 6시간마다 최신 뉴스를 종합해 헤드라인 1~2개 생성 (최신 5개 롤링 유지)
+    // 15분 파이프라인이 끝난 뒤 돌도록 :30 오프셋
+    @Scheduled(cron = "0 30 0/6 * * *")
+    fun scheduledHeadlinePipeline() = runBlocking {
+        if (!isHeadlineEnabled) return@runBlocking
+        println("📰 헤드라인 파이프라인 시작...")
+        headlineService.generateAndStore()
     }
 
     // 매일 새벽 4시에 오래된 조회 로그 청소 (조회수 중복 방지용)
@@ -166,15 +177,20 @@ class NewsPipelineService(
 
         if (geminiResult != null && (isTwitter || geminiResult.isAtmRelated)) {
             try {
+                // 리트윗이면 제목과 본문에 명시
+                val titleKo = geminiResult.titleKo?.let { if (article.isRetweet) "[리트윗] $it" else it }
+                val contentKo = geminiResult.contentKo?.let {
+                    if (article.isRetweet) "🔁 ${article.authorName ?: article.sourceName}님이 리트윗한 글입니다.\n\n$it" else it
+                }
                 newsArticleRepository.save(
                     NewsArticle(
                         articleType = article.articleType,
                         sourceName = article.sourceName,
                         authorName = detailResult.authorName,
                         originalUrl = article.url,
-                        titleKo = geminiResult.titleKo,
+                        titleKo = titleKo,
                         summaryKo = geminiResult.summaryKo,
-                        contentKo = geminiResult.contentKo,
+                        contentKo = contentKo,
                         contentRaw = detailResult.content,
                         imageUrl = detailResult.imageUrl ?: article.imageUrl,
                         category = geminiResult.category,

@@ -103,9 +103,15 @@ class TwitterApiService(
                 OffsetDateTime.now(SEOUL_ZONE)
             }
             
+            // 리트윗 감지: API가 주는 필드 또는 "RT @" 프리픽스로 판별
+            val isRetweet = tweet.optBoolean("retweeted", false)
+                || tweet.optJSONObject("retweeted_tweet") != null
+                || tweet.optJSONObject("retweeted_status") != null
+                || text.startsWith("RT @")
+
             if (text.isNotBlank() && tweetId.isNotBlank()) {
                 val fullUrl = "https://x.com/$username/status/$tweetId"
-                println("DEBUG [Twitter Scraper] Found Tweet: $fullUrl | Time: $publishedAt")
+                println("DEBUG [Twitter Scraper] Found Tweet: $fullUrl | Time: $publishedAt${if (isRetweet) " | RT" else ""}")
                 articles.add(
                     ScrapedArticle(
                         title = text,
@@ -114,7 +120,8 @@ class TwitterApiService(
                         sourceName = username,
                         articleType = com.atleti.news.entity.ArticleType.SNS_POST,
                         authorName = username,
-                        publishedAt = publishedAt
+                        publishedAt = publishedAt,
+                        isRetweet = isRetweet
                     )
                 )
             }
