@@ -164,7 +164,7 @@ class NewsPipelineService(
             geminiService.processArticle(article.title, detailResult.content.take(10000), article.sourceName, skipValidation = true)
         }
 
-        if (geminiResult != null && (isTwitter || geminiResult.is_atm_related)) {
+        if (geminiResult != null && (isTwitter || geminiResult.isAtmRelated)) {
             try {
                 newsArticleRepository.save(
                     NewsArticle(
@@ -172,9 +172,9 @@ class NewsPipelineService(
                         sourceName = article.sourceName,
                         authorName = detailResult.authorName,
                         originalUrl = article.url,
-                        titleKo = geminiResult.title_ko,
-                        summaryKo = geminiResult.summary_ko,
-                        contentKo = geminiResult.content_ko,
+                        titleKo = geminiResult.titleKo,
+                        summaryKo = geminiResult.summaryKo,
+                        contentKo = geminiResult.contentKo,
                         contentRaw = detailResult.content,
                         imageUrl = detailResult.imageUrl ?: article.imageUrl,
                         category = geminiResult.category,

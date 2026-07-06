@@ -1,5 +1,6 @@
 package com.atleti.news.service
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import kotlinx.coroutines.delay
@@ -287,12 +288,3 @@ class GeminiService(
         }
     }
 }
-
-data class GeminiResponse(
-    val is_atm_related: Boolean,
-    val category: String? = "[기타]",
-    val reason: String? = null,
-    val title_ko: String?,
-    val content_ko: String?,
-    val summary_ko: String?
-)
