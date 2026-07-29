@@ -62,11 +62,11 @@ sudo visudo -c    # 문법 검증 — "parsed OK" 확인
 CI가 만든 jar를 그대로 사용 (파이프라인 산출물 검증 겸함).
 
 1. GitHub 레포 → Actions → 초록불 뜬 실행 클릭 → 하단 **Artifacts**에서 `app-jar` 다운로드
-2. 압축 풀면 `atleti-news-0.0.1-SNAPSHOT.jar`
+2. 압축 풀면 `news-0.0.1-SNAPSHOT.jar`
 3. 로컬(Windows PowerShell)에서 서버로 전송:
 
 ```powershell
-scp .\atleti-news-0.0.1-SNAPSHOT.jar ubuntu@<서버IP>:/opt/atleti-news/app-new.jar
+scp .\news-0.0.1-SNAPSHOT.jar ubuntu@<서버IP>:/opt/atleti-news/app-new.jar
 ```
 
 (평소 SSH 접속에 키를 쓰면 `-i <키경로>` 추가)
