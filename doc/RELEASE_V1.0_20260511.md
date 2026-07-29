@@ -20,7 +20,8 @@
 ## 2. 배포 및 인프라 (Deployment)
 본 시스템은 **Oracle Cloud (OCI)**의 Always Free 티어를 적극 활용하여 24시간 무중단 운용됩니다.
 
-*   **백엔드 서버**: OCI Compute Instance (ARM 기반 Ampere A1 Compute)
+*   **백엔드 서버**: OCI Compute Instance (VM.Standard.E2.1.Micro — AMD x86, 1 OCPU / 1GB RAM)
+    *   춘천 리전은 Ampere A1(ARM) 신규 생성이 제공되지 않아 Micro 인스턴스로 운용 중.
 *   **데이터베이스**: OCI 전용 PostgreSQL 인스턴스 또는 Compute 내 설치형 PostgreSQL 활용.
 *   **보안**: OCI Security List를 통한 API 포트 및 DB 포트 정밀 제어.
 
