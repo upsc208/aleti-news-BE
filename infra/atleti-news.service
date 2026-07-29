@@ -1,0 +1,24 @@
+# Atleti News 백엔드 systemd 유닛
+# 설치 위치: /etc/systemd/system/atleti-news.service
+# 설계: docs/ci-cd-design.md 4.4
+
+[Unit]
+Description=Atleti News backend (Spring Boot)
+# 네트워크와 로컬 PostgreSQL이 뜬 뒤에 시작
+After=network.target postgresql.service
+
+[Service]
+# 서버 계정명이 ubuntu가 아니면 수정 (서버에서 whoami로 확인)
+User=ubuntu
+# 앱이 .env를 "현재 디렉터리"에서 읽으므로 WorkingDirectory가 중요
+WorkingDirectory=/opt/atleti-news
+# -Xmx400m: RAM 1GB 예산 안에서 JVM 힙 상한 고정
+ExecStart=/usr/bin/java -Xms128m -Xmx400m -jar /opt/atleti-news/app.jar --spring.profiles.active=prod
+# 비정상 종료 시 5초 뒤 자동 재시작
+Restart=on-failure
+RestartSec=5
+# JVM은 정상 종료(SIGTERM) 시 143으로 끝나므로 실패로 간주하지 않음
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target
