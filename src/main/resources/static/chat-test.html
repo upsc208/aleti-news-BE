@@ -32,20 +32,27 @@
   <script>
     let stomp = null;
 
-    function connect() {
+    function appendMessage(msg) {
+      const p = document.createElement('p');
+      p.textContent = msg.nickname + ': ' + msg.content;
+      const log = document.getElementById('log');
+      log.appendChild(p);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function connect() {
       const matchId = document.getElementById('matchId').value;
+      // ⓪ 입장 전에 최근 메시지 100개를 REST로 먼저 로딩 (Phase 2b)
+      const history = await fetch('/api/chat/' + matchId).then(r => r.json());
+      document.getElementById('log').innerHTML = '';
+      history.forEach(appendMessage);
       // ① 핸드셰이크: /ws로 접속 (SockJS가 WebSocket 안 되면 자동 fallback)
       stomp = Stomp.over(new SockJS('/ws'));
       stomp.connect({}, () => {
         document.getElementById('status').textContent = '🟢 접속됨 (방 ' + matchId + ')';
         // ② 구독: 이 방의 방송 채널을 듣기 시작
         stomp.subscribe('/topic/chat/' + matchId, (frame) => {
-          const msg = JSON.parse(frame.body);
-          const p = document.createElement('p');
-          p.textContent = msg.nickname + ': ' + msg.content;
-          const log = document.getElementById('log');
-          log.appendChild(p);
-          log.scrollTop = log.scrollHeight;
+          appendMessage(JSON.parse(frame.body));
         });
       });
     }
