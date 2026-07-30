@@ -24,7 +24,6 @@ class NewsPipelineService(
     private val newsArticleRepository: NewsArticleRepository,
     private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
-    private val articleViewLogRepository: com.atleti.news.repository.ArticleViewLogRepository,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.keywords}") private val keywordString: String,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.twitter}") private val isTwitterEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.news}") private val isNewsEnabled: Boolean,
@@ -56,16 +55,7 @@ class NewsPipelineService(
         headlineService.generateAndStore()
     }
 
-    // 매일 새벽 4시에 오래된 조회 로그 청소 (조회수 중복 방지용)
-    @Scheduled(cron = "0 0 4 * * *")
-    @org.springframework.transaction.annotation.Transactional
-    fun cleanOldData() {
-        // 조회수 중복 방지 로그는 1일치만 남기고 삭제 (DB 용량 절약 및 개인정보 관리)
-        val logCutoffDate = java.time.OffsetDateTime.now().minusDays(1)
-        articleViewLogRepository.deleteByViewedAtBefore(logCutoffDate)
-        println("🧹 1일 경과 조회 로그를 청소했습니다.")
-    }
-
+    // 조회 로그 청소 배치는 Redis 전환으로 제거됨 — 중복 방지 마커가 TTL 24h로 자동 소멸 (docs/redis-design.md Phase 1)
 
     fun runPipeline() = runBlocking {
         val scannedCount = AtomicInteger(0)

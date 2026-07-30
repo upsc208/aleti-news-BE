@@ -21,7 +21,7 @@ class NewsController(
     private val newsArticleRepository: NewsArticleRepository,
     private val newsSourceRepository: com.atleti.news.repository.NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
-    private val articleViewLogRepository: com.atleti.news.repository.ArticleViewLogRepository,
+    private val viewCountService: com.atleti.news.service.ViewCountService,
     private val newsPipelineService: NewsPipelineService
 ) {
 
@@ -76,18 +76,13 @@ class NewsController(
         val article = newsArticleRepository.findById(id)
             .orElseThrow { NoSuchElementException("해당 기사를 찾을 수 없습니다. ID: $id") }
         
-        // 조회수 증가 로직 (IP 기반 24시간 중복 방지)
-        val ip = request.getHeader("X-Forwarded-For")?.split(",")?.firstOrNull()?.trim() 
+        // 조회수 증가 로직 (IP 기반 24시간 중복 방지 — Redis SETNX, docs/redis-design.md Phase 1)
+        val ip = request.getHeader("X-Forwarded-For")?.split(",")?.firstOrNull()?.trim()
             ?: request.remoteAddr
-        
-        val isAlreadyViewed = articleViewLogRepository.existsByArticleIdAndIpAddressAndViewedAtAfter(
-            id, ip, OffsetDateTime.now().minusDays(1)
-        )
 
-        if (!isAlreadyViewed) {
+        if (viewCountService.tryMarkViewed(id, ip)) {
             article.viewCount += 1
             newsArticleRepository.save(article)
-            articleViewLogRepository.save(com.atleti.news.entity.ArticleViewLog(articleId = id, ipAddress = ip))
         }
         
         return NewsDetailResponse(
