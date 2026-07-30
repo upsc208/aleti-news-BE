@@ -46,10 +46,11 @@ class ChatService(
         val cleanNickname = validateNickname(nickname)
         val cleanContent = validateContent(content)
         checkRateLimit(ip)
+        val fixedNickname = reserveNickname(matchId, cleanNickname, ip)
 
         val message = ChatMessage(
             matchId = matchId,
-            nickname = cleanNickname,
+            nickname = fixedNickname,
             content = cleanContent,
             sentAt = OffsetDateTime.now()
         )
@@ -109,6 +110,44 @@ class ChatService(
         if (URL_PATTERN.containsMatchIn(clean)) throw ChatException("링크는 보낼 수 없습니다.")
         return clean
     }
+
+    // --- 닉네임 정책 (6.5): 방 단위 선착순 선점 + IP당 1개 고정 ---
+
+    /**
+     * 두 장부를 유지한다 (둘 다 방 TTL 24h와 함께 소멸):
+     *   chat:nick:{matchId}   정규화닉네임 → IP   : 선착순 선점 (남의 닉네임 사용 차단)
+     *   chat:ipnick:{matchId} IP → 표시닉네임     : IP당 1개 고정 (닉네임 갈아타기 차단)
+     * 반환값은 이 방에서 확정된 닉네임 — 재접속 시 입력이 달라도 원래 닉네임으로 고정.
+     */
+    private fun reserveNickname(matchId: String, nickname: String, ip: String): String {
+        val nickKey = "chat:nick:$matchId"
+        val ipKey = "chat:ipnick:$matchId"
+        val hash = redis.opsForHash<String, String>()
+
+        // 이미 이 방에서 닉네임을 정한 IP인가?
+        val myNickname = hash.get(ipKey, ip)
+        if (myNickname != null) {
+            if (normalize(myNickname) != normalize(nickname)) {
+                throw ChatException("이 방에서는 '${myNickname}'(으)로 이미 참여 중이에요. 닉네임은 바꿀 수 없어요.")
+            }
+            return myNickname
+        }
+
+        // 처음 정하는 IP — 선점 시도 (HSETNX: 원자적이라 동시 시도에도 한 명만 성공)
+        val normalized = normalize(nickname)
+        val reserved = hash.putIfAbsent(nickKey, normalized, ip)
+        if (!reserved && hash.get(nickKey, normalized) != ip) {
+            throw ChatException("이미 사용 중인 닉네임이에요. 다른 닉네임을 입력해주세요.")
+        }
+        hash.put(ipKey, ip, nickname)
+        redis.expire(nickKey, Duration.ofHours(24))
+        redis.expire(ipKey, Duration.ofHours(24))
+        return nickname
+    }
+
+    /** 유사 닉네임 사칭 방지용 정규화: trim → 소문자 → 연속 공백 축약 ("Koke" ≒ "koke ") */
+    private fun normalize(nickname: String): String =
+        nickname.trim().lowercase().replace(Regex("\\s+"), " ")
 
     // --- 도배 방지 (6.8): INCR 원자 카운터 + TTL 창 ---
 
