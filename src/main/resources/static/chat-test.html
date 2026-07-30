@@ -41,6 +41,13 @@
     }
 
     async function connect() {
+      // 재접속 시 기존 연결을 먼저 끊는다 — 안 끊으면 구독이 쌓여서
+      // 같은 메시지가 구독 수만큼 중복 표시됨
+      if (stomp) {
+        try { stomp.disconnect(); } catch (e) {}
+        stomp = null;
+        document.getElementById('status').textContent = '⚪ 미접속';
+      }
       const matchId = document.getElementById('matchId').value;
       // ⓪ 입장 전에 최근 메시지 100개를 REST로 먼저 로딩 (Phase 2b)
       const history = await fetch('/api/chat/' + matchId).then(r => r.json());
