@@ -54,6 +54,15 @@
         stomp.subscribe('/topic/chat/' + matchId, (frame) => {
           appendMessage(JSON.parse(frame.body));
         });
+        // ③ 개인 에러 채널 구독: 정책 위반(닫힌 방, 도배 등) 시 나에게만 오는 안내
+        stomp.subscribe('/user/queue/errors', (frame) => {
+          const p = document.createElement('p');
+          p.style.color = 'red';
+          p.textContent = '⚠️ ' + JSON.parse(frame.body).error;
+          const log = document.getElementById('log');
+          log.appendChild(p);
+          log.scrollTop = log.scrollHeight;
+        });
       });
     }
 

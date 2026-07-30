@@ -144,6 +144,7 @@ class FootballDataService(
                         } catch (e: Exception) { utcTimeStr }
 
                         UpcomingMatchEntity(
+                            matchId = node.path("id").asText().takeIf { it.isNotBlank() },
                             opponent = if (isAtletiHome) aName else hName,
                             matchDate = kstTimeStr,
                             isHome = isAtletiHome,

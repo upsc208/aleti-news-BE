@@ -14,16 +14,20 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
  */
 @Configuration
 @EnableWebSocketMessageBroker
-class WebSocketConfig : WebSocketMessageBrokerConfigurer {
+class WebSocketConfig(
+    private val ipHandshakeInterceptor: IpHandshakeInterceptor
+) : WebSocketMessageBrokerConfigurer {
 
     override fun registerStompEndpoints(registry: StompEndpointRegistry) {
         registry.addEndpoint("/ws")
             .setAllowedOriginPatterns("*")   // 개발 단계 전체 허용 — 배포 전 프론트 도메인으로 제한 예정
+            .addInterceptors(ipHandshakeInterceptor)   // 핸드셰이크 시 IP 캡처 (rate limit용)
             .withSockJS()                    // WebSocket 미지원 환경에서 HTTP 폴링으로 자동 대체
     }
 
     override fun configureMessageBroker(registry: MessageBrokerRegistry) {
-        registry.enableSimpleBroker("/topic")            // 방송 채널 prefix
+        // "/queue"는 개인 전달용 (정책 위반 에러를 보낸 사람에게만 회신)
+        registry.enableSimpleBroker("/topic", "/queue")
         registry.setApplicationDestinationPrefixes("/app") // 서버 로직 호출 prefix
     }
 }

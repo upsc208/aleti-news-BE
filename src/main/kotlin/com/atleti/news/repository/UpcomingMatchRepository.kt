@@ -7,4 +7,5 @@ import org.springframework.stereotype.Repository
 @Repository
 interface UpcomingMatchRepository : JpaRepository<UpcomingMatchEntity, Long> {
     fun findAllByOrderByMatchDateAsc(): List<UpcomingMatchEntity>
+    fun findByMatchId(matchId: String): UpcomingMatchEntity?
 }
