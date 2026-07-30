@@ -15,7 +15,7 @@
   </style>
 </head>
 <body>
-  <h3>매치데이 채팅 테스트 <small>(v3 — 이 표시가 안 보이면 Ctrl+F5)</small></h3>
+  <h3>매치데이 채팅 테스트 <small>(v4 — 이 표시가 안 보이면 Ctrl+F5)</small></h3>
   <div>
     방 번호: <input id="matchId" value="1" size="4">
     닉네임: <input id="nickname" value="테스터" size="10">
@@ -34,7 +34,9 @@
 
     function appendMessage(msg) {
       const p = document.createElement('p');
-      p.textContent = msg.nickname + ': ' + msg.content;
+      // ipHash: 같은 사람은 항상 같은 4자리 — 닉네임이 달라도 동일인 식별 가능
+      const tag = msg.ipHash ? ' [' + msg.ipHash + ']' : '';
+      p.textContent = msg.nickname + tag + ': ' + msg.content;
       const log = document.getElementById('log');
       log.appendChild(p);
       log.scrollTop = log.scrollHeight;
@@ -52,15 +54,16 @@
         document.getElementById('status').textContent = '⚪ 미접속';
       }
       const matchId = document.getElementById('matchId').value;
-      // ⓪ 입장 전에 최근 메시지 100개를 REST로 먼저 로딩 (Phase 2b)
-      const history = await fetch('/api/chat/' + matchId).then(r => r.json());
+      // ⓪ 입장 전에 방 정보(오픈 여부/접속자 수/최근 메시지)를 REST로 먼저 로딩
+      const room = await fetch('/api/chat/' + matchId).then(r => r.json());
       document.getElementById('log').innerHTML = '';
-      history.forEach(appendMessage);
+      room.messages.forEach(appendMessage);
       // ① 핸드셰이크: /ws로 접속 (SockJS가 WebSocket 안 되면 자동 fallback)
       stomp = Stomp.over(new SockJS('/ws'));
       stomp.connect({}, () => {
         btn.disabled = false;
-        document.getElementById('status').textContent = '🟢 접속됨 (방 ' + matchId + ')';
+        document.getElementById('status').textContent =
+          '🟢 접속됨 (방 ' + matchId + ', 나 포함 ' + (room.onlineCount + 1) + '명' + (room.open ? '' : ', 방 닫힘') + ')';
         // ② 구독: 이 방의 방송 채널을 듣기 시작
         stomp.subscribe('/topic/chat/' + matchId, (frame) => {
           appendMessage(JSON.parse(frame.body));

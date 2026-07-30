@@ -13,8 +13,18 @@ import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.ResponseBody
 
+/** 방 정보 응답 (docs/redis-design.md 6.3): 오픈 여부 + 접속자 수 + 최근 메시지 */
+data class ChatRoomResponse(
+    val open: Boolean,
+    val onlineCount: Long,
+    val messages: List<ChatMessage>
+)
+
 @Controller
-class ChatController(private val chatService: ChatService) {
+class ChatController(
+    private val chatService: ChatService,
+    private val presenceTracker: com.atleti.news.service.ChatPresenceTracker
+) {
 
     /**
      * SEND /app/chat/{matchId} → 검증(방 오픈/내용/rate limit) 후 Redis 저장 + PUBLISH.
@@ -39,9 +49,13 @@ class ChatController(private val chatService: ChatService) {
     fun handleChatError(e: ChatException): Map<String, String> =
         mapOf("error" to (e.message ?: "요청을 처리할 수 없습니다."))
 
-    /** 입장 시 직전 대화 로딩용 REST — WebSocket 연결 전에 최근 100개를 먼저 그린다 */
+    /** 입장 시 방 정보 로딩용 REST — 오픈 여부, 접속자 수, 최근 메시지 100개 */
     @GetMapping("/api/chat/{matchId}")
     @ResponseBody
-    fun recentMessages(@PathVariable matchId: String): List<ChatMessage> =
-        chatService.recentMessages(matchId)
+    fun roomInfo(@PathVariable matchId: String): ChatRoomResponse =
+        ChatRoomResponse(
+            open = chatService.isOpen(matchId),
+            onlineCount = presenceTracker.onlineCount(matchId),
+            messages = chatService.recentMessages(matchId)
+        )
 }

@@ -30,10 +30,12 @@ class ChatService(
     private val objectMapper: ObjectMapper,
     private val upcomingMatchRepository: UpcomingMatchRepository,
     private val matchResultRepository: MatchResultRepository,
-    @Value("\${atleti.chat.always-open}") private val alwaysOpen: Boolean
+    @Value("\${atleti.chat.always-open}") private val alwaysOpen: Boolean,
+    @Value("\${atleti.chat.ip-salt}") private val ipSalt: String
 ) {
     companion object {
         const val CHANNEL = "chat.messages"   // Pub/Sub 채널 (단일 채널, 페이로드에 matchId 포함)
+        private const val BANNED_KEY = "chat:banned"
         private const val MAX_RECENT = 100L
         private const val MAX_CONTENT_LENGTH = 200
         private const val RATE_LIMIT_WINDOW = 10L   // 초
@@ -43,6 +45,7 @@ class ChatService(
 
     fun send(matchId: String, nickname: String, content: String, ip: String) {
         requireRoomOpen(matchId)
+        requireNotBanned(ip)
         val cleanNickname = validateNickname(nickname)
         val cleanContent = validateContent(content)
         checkRateLimit(ip)
@@ -52,7 +55,8 @@ class ChatService(
             matchId = matchId,
             nickname = fixedNickname,
             content = cleanContent,
-            sentAt = OffsetDateTime.now()
+            sentAt = OffsetDateTime.now(),
+            ipHash = ipHash(ip)
         )
         val json = objectMapper.writeValueAsString(message)
         val key = "chat:msg:$matchId"
@@ -110,6 +114,26 @@ class ChatService(
         if (URL_PATTERN.containsMatchIn(clean)) throw ChatException("링크는 보낼 수 없습니다.")
         return clean
     }
+
+    // --- IP 차단 (6.8): 관리자가 등록한 IP는 전송 거부. Set, TTL 없음(영구) ---
+
+    private fun requireNotBanned(ip: String) {
+        if (redis.opsForSet().isMember(BANNED_KEY, ip) == true) {
+            throw ChatException("관리자에 의해 차단된 상태예요.")
+        }
+    }
+
+    fun ban(ip: String) { redis.opsForSet().add(BANNED_KEY, ip) }
+    fun unban(ip: String) { redis.opsForSet().remove(BANNED_KEY, ip) }
+    fun bannedIps(): Set<String> = redis.opsForSet().members(BANNED_KEY) ?: emptySet()
+
+    // --- ipHash (6.4): 동일인 식별용. salt 포함 SHA-256 앞 4자리, 원본 IP는 노출 금지 ---
+
+    private fun ipHash(ip: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest((ipSalt + ip).toByteArray())
+            .joinToString("") { "%02x".format(it) }
+            .take(4)
 
     // --- 닉네임 정책 (6.5): 방 단위 선착순 선점 + IP당 1개 고정 ---
 
