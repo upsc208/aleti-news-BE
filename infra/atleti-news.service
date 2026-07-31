@@ -4,8 +4,12 @@
 
 [Unit]
 Description=Atleti News backend (Spring Boot)
-# 네트워크와 로컬 PostgreSQL이 뜬 뒤에 시작
-After=network.target postgresql.service
+# 네트워크와 로컬 PostgreSQL, Redis가 뜬 뒤에 시작.
+# Redis가 앱보다 늦게 뜨면 기동 시 Pub/Sub 구독 등록에 실패해(fail-open이라 앱은 뜬다)
+# 재시작 전까지 채팅 메시지가 중계되지 않는다 — 재부팅 시 순서를 여기서 보장한다.
+After=network.target postgresql.service redis-server.service
+# Redis가 없거나 죽어도 앱은 떠야 하므로(조회수/채팅은 부가 기능) Requires가 아닌 Wants.
+Wants=redis-server.service
 
 [Service]
 # 서버 계정명이 ubuntu가 아니면 수정 (서버에서 whoami로 확인)
