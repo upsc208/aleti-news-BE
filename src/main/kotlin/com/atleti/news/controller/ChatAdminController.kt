@@ -1,5 +1,6 @@
 package com.atleti.news.controller
 
+import com.atleti.news.service.ChatParticipant
 import com.atleti.news.service.ChatService
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
@@ -27,6 +28,20 @@ class ChatAdminController(
     fun bannedList(@RequestHeader("X-Admin-Key", required = false) key: String?): Set<String> {
         requireAdmin(key)
         return chatService.bannedIps()
+    }
+
+    /**
+     * 방 참가자 목록 — 닉네임/ipHash와 차단에 필요한 원본 IP를 함께 내려준다.
+     * 채팅 화면에는 ipHash 4자리만 보여서, 이 API 없이는 도배하는 사람을 찾아도
+     * 서버에 SSH로 들어가 redis-cli를 뒤져야 IP를 알 수 있었다.
+     */
+    @GetMapping("/{matchId}/participants")
+    fun participants(
+        @RequestHeader("X-Admin-Key", required = false) key: String?,
+        @PathVariable matchId: String
+    ): List<ChatParticipant> {
+        requireAdmin(key)
+        return chatService.participants(matchId)
     }
 
     @PostMapping("/ban")

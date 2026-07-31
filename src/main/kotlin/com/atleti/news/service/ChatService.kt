@@ -16,6 +16,18 @@ import java.time.ZoneId
 class ChatException(message: String) : RuntimeException(message)
 
 /**
+ * 관리자 화면 전용 참가자 정보.
+ * 채팅 화면에는 ipHash 4자리만 보이므로 도배하는 사람을 봐도 차단할 IP를 알 수 없다.
+ * 그 연결 고리를 관리자에게만 제공한다 — 원본 IP는 이 응답(관리자 키 필요)에만 실린다.
+ */
+data class ChatParticipant(
+    val nickname: String,
+    val ip: String,
+    val ipHash: String,
+    val banned: Boolean
+)
+
+/**
  * 채팅 발행/조회 (docs/redis-design.md 6.2, 6.6, 6.8).
  * 메시지 1건 발행 시 순서:
  *   1) 방 오픈 검증  — 킥오프 1시간 전 ~ 킥오프 +3시간만 허용
@@ -137,6 +149,25 @@ class ChatService(
     fun ban(ip: String) { redis.opsForSet().add(BANNED_KEY, ip) }
     fun unban(ip: String) { redis.opsForSet().remove(BANNED_KEY, ip) }
     fun bannedIps(): Set<String> = redis.opsForSet().members(BANNED_KEY) ?: emptySet()
+
+    /**
+     * 이 방에서 닉네임을 정한 사람 목록 (관리자 전용).
+     * 출처는 닉네임 장부 chat:ipnick:{matchId} (IP → 표시닉네임)이므로,
+     * 지금 접속 중인 사람이 아니라 **이 방에 한 번이라도 참여한 사람**이 나온다.
+     * 나간 사람도 남지만 차단 대상을 찾는 용도에는 그편이 오히려 유용하다 (방 TTL 24h와 함께 소멸).
+     */
+    fun participants(matchId: String): List<ChatParticipant> {
+        val entries = redis.opsForHash<String, String>().entries("chat:ipnick:$matchId")
+        val banned = bannedIps()
+        return entries.map { (ip, nickname) ->
+            ChatParticipant(
+                nickname = nickname,
+                ip = ip,
+                ipHash = ipHash(ip),
+                banned = ip in banned
+            )
+        }.sortedBy { it.nickname }
+    }
 
     // --- ipHash (6.4): 동일인 식별용. salt 포함 SHA-256 앞 4자리, 원본 IP는 노출 금지 ---
 

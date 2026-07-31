@@ -1,5 +1,6 @@
 package com.atleti.news.controller
 
+import com.atleti.news.service.ChatParticipant
 import com.atleti.news.service.ChatService
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
@@ -88,5 +89,42 @@ class ChatAdminControllerTest {
 
         assertEquals("차단 해제: 10.0.0.1", result.response.getContentAsString(StandardCharsets.UTF_8))
         verify(chatService).unban("10.0.0.1")
+    }
+
+    @Test
+    @DisplayName("올바른 키로 참가자 목록 조회 시 닉네임·ipHash와 차단용 원본 IP를 함께 반환한다")
+    fun testParticipantsSuccess() {
+        `when`(chatService.participants("12345")).thenReturn(
+            listOf(
+                ChatParticipant(nickname = "골레아도르", ip = "1.2.3.4", ipHash = "a3f9", banned = false),
+                ChatParticipant(nickname = "도배범", ip = "5.6.7.8", ipHash = "b7c1", banned = true)
+            )
+        )
+
+        mockMvc.perform(
+            get("/api/admin/chat/12345/participants")
+                .header("X-Admin-Key", validAdminKey)
+        )
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$[0].nickname").value("골레아도르"))
+            .andExpect(jsonPath("$[0].ip").value("1.2.3.4"))
+            .andExpect(jsonPath("$[0].ipHash").value("a3f9"))
+            .andExpect(jsonPath("$[0].banned").value(false))
+            .andExpect(jsonPath("$[1].banned").value(true))
+    }
+
+    @Test
+    @DisplayName("키 없이 참가자 목록을 조회하면 403 — 원본 IP가 새어나가서는 안 된다")
+    fun testParticipantsForbidden() {
+        mockMvc.perform(get("/api/admin/chat/12345/participants"))
+            .andExpect(status().isForbidden)
+
+        mockMvc.perform(
+            get("/api/admin/chat/12345/participants")
+                .header("X-Admin-Key", "wrong-key")
+        )
+            .andExpect(status().isForbidden)
+
+        verify(chatService, never()).participants(anyString())
     }
 }
