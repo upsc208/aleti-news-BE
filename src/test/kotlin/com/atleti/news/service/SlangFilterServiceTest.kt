@@ -5,6 +5,7 @@ import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import org.springframework.core.io.DefaultResourceLoader
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -67,5 +68,54 @@ class SlangFilterServiceTest {
         assertTrue(slangFilterService.containsProfanity("개새"))
         assertTrue(slangFilterService.containsProfanity("이 개새 뭐야"))
         assertTrue(slangFilterService.containsProfanity("개새끼"))
+    }
+
+    @Test
+    @DisplayName("전화번호가 형태를 바꿔도 감지된다")
+    fun testPhoneNumberDetection() {
+        assertTrue(slangFilterService.containsContactInfo("010-1234-5678"))
+        assertTrue(slangFilterService.containsContactInfo("01012345678"))
+        assertTrue(slangFilterService.containsContactInfo("연락처 010 1234 5678 로 주세요"))
+        assertTrue(slangFilterService.containsContactInfo("010.1234.5678"))
+        assertTrue(slangFilterService.containsContactInfo("02-1234-5678"))
+        // 잘게 쪼개는 우회 — 공백·특수문자를 지우면 휴대폰 번호 모양
+        assertTrue(slangFilterService.containsContactInfo("0 1 0 . 1 2 3 4 . 5 6 7 8"))
+    }
+
+    @Test
+    @DisplayName("계좌번호가 감지된다")
+    fun testAccountNumberDetection() {
+        assertTrue(slangFilterService.containsContactInfo("3333-01-1234567 입금해주세요"))  // 카카오뱅크
+        assertTrue(slangFilterService.containsContactInfo("110-123-456789"))               // 신한
+        assertTrue(slangFilterService.containsContactInfo("1002 123 456789"))              // 우리
+        assertTrue(slangFilterService.containsContactInfo("국민 12345678901234"))
+    }
+
+    @Test
+    @DisplayName("축구 채팅에 흔한 숫자(스코어·날짜·시즌·등번호)는 연락처로 오탐하지 않는다")
+    fun testNoFalsePositiveOnCommonNumbers() {
+        assertFalse(slangFilterService.containsContactInfo("오늘 3-1로 이겼다"))
+        assertFalse(slangFilterService.containsContactInfo("4-4-2 포메이션이 낫지 않나"))
+        assertFalse(slangFilterService.containsContactInfo("다음 경기 2026-08-15 21:00 킥오프"))
+        assertFalse(slangFilterService.containsContactInfo("2025-2026 시즌 기대된다"))
+        assertFalse(slangFilterService.containsContactInfo("등번호 7, 9, 10, 11, 14, 20, 21"))
+        assertFalse(slangFilterService.containsContactInfo("전반 45분 후반 90분 총 135분"))
+    }
+
+    @Test
+    @DisplayName("validateText는 금칙어와 연락처를 서로 다른 안내 문구로 막는다")
+    fun testValidateTextMessages() {
+        val profanity = assertFailsWith<ChatException> {
+            slangFilterService.validateText("씨발", "메시지")
+        }
+        assertTrue(profanity.message!!.contains("부적절한 표현"))
+
+        val contact = assertFailsWith<ChatException> {
+            slangFilterService.validateText("010-1234-5678", "메시지")
+        }
+        assertTrue(contact.message!!.contains("전화번호"))
+
+        // 정상 메시지는 통과
+        slangFilterService.validateText("오늘 경기 3-1 승리!", "메시지")
     }
 }
