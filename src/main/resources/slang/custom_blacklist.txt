@@ -1,0 +1,5 @@
+admin
+administrator
+관리자
+운영자
+system

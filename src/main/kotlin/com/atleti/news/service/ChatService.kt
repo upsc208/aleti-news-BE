@@ -30,6 +30,7 @@ class ChatService(
     private val objectMapper: ObjectMapper,
     private val upcomingMatchRepository: UpcomingMatchRepository,
     private val matchResultRepository: MatchResultRepository,
+    private val slangFilterService: SlangFilterService,
     @Value("\${atleti.chat.always-open}") private val alwaysOpen: Boolean,
     @Value("\${atleti.chat.ip-salt}") private val ipSalt: String
 ) {
@@ -65,6 +66,14 @@ class ChatService(
         redis.opsForList().trim(key, 0, MAX_RECENT - 1)
         redis.expire(key, Duration.ofHours(24))
         redis.convertAndSend(CHANNEL, json)
+    }
+
+    /** REST API용 닉네임 사전 선점/검증 */
+    fun reserveNicknamePublic(matchId: String, nickname: String, ip: String): String {
+        requireRoomOpen(matchId)
+        requireNotBanned(ip)
+        val cleanNickname = validateNickname(nickname)
+        return reserveNickname(matchId, cleanNickname, ip)
     }
 
     /** 입장 시 보여줄 최근 메시지 — 오래된 것부터. 닫힌 방도 TTL 내 열람은 허용 (6.6) */
@@ -104,6 +113,7 @@ class ChatService(
     private fun validateNickname(nickname: String): String {
         val clean = nickname.trim()
         if (clean.length !in 2..12) throw ChatException("닉네임은 2~12자로 입력해주세요.")
+        slangFilterService.validateText(clean, "닉네임")
         return clean
     }
 
@@ -112,6 +122,7 @@ class ChatService(
         if (clean.isEmpty()) throw ChatException("빈 메시지는 보낼 수 없습니다.")
         if (clean.length > MAX_CONTENT_LENGTH) throw ChatException("메시지는 ${MAX_CONTENT_LENGTH}자 이하로 입력해주세요.")
         if (URL_PATTERN.containsMatchIn(clean)) throw ChatException("링크는 보낼 수 없습니다.")
+        slangFilterService.validateText(clean, "메시지")
         return clean
     }
 

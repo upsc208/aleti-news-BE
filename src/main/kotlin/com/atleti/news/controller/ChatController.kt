@@ -9,9 +9,10 @@ import org.springframework.messaging.handler.annotation.MessageMapping
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor
 import org.springframework.messaging.simp.annotation.SendToUser
 import org.springframework.stereotype.Controller
-import org.springframework.web.bind.annotation.GetMapping
-import org.springframework.web.bind.annotation.PathVariable
-import org.springframework.web.bind.annotation.ResponseBody
+import jakarta.servlet.http.HttpServletRequest
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.*
 
 /** 방 정보 응답 (docs/redis-design.md 6.3): 오픈 여부 + 접속자 수 + 최근 메시지 */
 data class ChatRoomResponse(
@@ -19,6 +20,9 @@ data class ChatRoomResponse(
     val onlineCount: Long,
     val messages: List<ChatMessage>
 )
+
+data class NicknameRequest(val nickname: String = "")
+data class NicknameResponse(val nickname: String, val status: String = "RESERVED")
 
 @Controller
 class ChatController(
@@ -58,4 +62,25 @@ class ChatController(
             onlineCount = presenceTracker.onlineCount(matchId),
             messages = chatService.recentMessages(matchId)
         )
+
+    /** 닉네임 사전 선점 REST — 선점 성공 시 200, 중복/금칙어/방닫힘 시 409 Conflict */
+    @PostMapping("/api/chat/{matchId}/nickname")
+    @ResponseBody
+    fun reserveNickname(
+        @PathVariable matchId: String,
+        @RequestBody request: NicknameRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<Any> {
+        val ip = httpRequest.getHeader("X-Forwarded-For")
+            ?.split(",")?.firstOrNull()?.trim()
+            ?: httpRequest.remoteAddr
+            ?: "unknown"
+        return try {
+            val reserved = chatService.reserveNicknamePublic(matchId, request.nickname, ip)
+            ResponseEntity.ok(NicknameResponse(nickname = reserved))
+        } catch (e: ChatException) {
+            ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(mapOf("error" to (e.message ?: "닉네임 선점에 실패했습니다.")))
+        }
+    }
 }

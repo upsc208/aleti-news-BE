@@ -54,7 +54,26 @@
         document.getElementById('status').textContent = '⚪ 미접속';
       }
       const matchId = document.getElementById('matchId').value;
-      // ⓪ 입장 전에 방 정보(오픈 여부/접속자 수/최근 메시지)를 REST로 먼저 로딩
+      const nickname = document.getElementById('nickname').value;
+
+      // ⓪-1 닉네임 사전 선점 REST API 호출 (중복/금칙어 사전 검증)
+      try {
+        const nickRes = await fetch('/api/chat/' + matchId + '/nickname', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nickname: nickname })
+        });
+        if (!nickRes.ok) {
+          const errData = await nickRes.json();
+          alert('⚠️ 닉네임 선점 실패: ' + (errData.error || '접속할 수 없습니다.'));
+          btn.disabled = false;
+          return;
+        }
+      } catch (e) {
+        console.warn('닉네임 사전 검증 네트워크 오류', e);
+      }
+
+      // ⓪-2 입장 전에 방 정보(오픈 여부/접속자 수/최근 메시지)를 REST로 먼저 로딩
       const room = await fetch('/api/chat/' + matchId).then(r => r.json());
       document.getElementById('log').innerHTML = '';
       room.messages.forEach(appendMessage);
