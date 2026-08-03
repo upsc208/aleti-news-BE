@@ -1,8 +1,10 @@
 package com.atleti.news.service
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito.*
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
@@ -26,7 +28,43 @@ class ChatPresenceTrackerTest {
         redis = mock(StringRedisTemplate::class.java)
         valOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
         `when`(redis.opsForValue()).thenReturn(valOps)
-        tracker = ChatPresenceTracker(redis)
+        tracker = ChatPresenceTracker(redis, ObjectMapper().findAndRegisterModules())
+    }
+
+    @Test
+    @DisplayName("접속자 수가 바뀌면 방에 있는 사람들에게 즉시 방송된다")
+    fun testPresenceIsBroadcastOnChange() {
+        val headers = mapOf(
+            SimpMessageHeaderAccessor.DESTINATION_HEADER to "/topic/chat/free",
+            SimpMessageHeaderAccessor.SESSION_ID_HEADER to "sess-1",
+            SimpMessageHeaderAccessor.SUBSCRIPTION_ID_HEADER to "sub-1"
+        )
+        `when`(valOps.increment("chat:online:free", 1L)).thenReturn(2L)
+
+        tracker.onSubscribe(SessionSubscribeEvent(this, GenericMessage(ByteArray(0), MessageHeaders(headers))))
+
+        // 페이로드에 방과 갱신된 인원이 실려야 프론트가 폴링 없이 숫자를 고칠 수 있다
+        val payload = ArgumentCaptor.forClass(String::class.java)
+        verify(redis, times(1)).convertAndSend(eq("chat.presence"), payload.capture())
+        val event = ObjectMapper().readValue(payload.value, PresenceEvent::class.java)
+        assertEquals("free", event.matchId)
+        assertEquals(2L, event.onlineCount)
+    }
+
+    @Test
+    @DisplayName("presence 구독(/topic/presence/...)은 접속자로 세지 않는다")
+    fun testPresenceSubscriptionIsNotCounted() {
+        val headers = mapOf(
+            SimpMessageHeaderAccessor.DESTINATION_HEADER to "/topic/presence/free",
+            SimpMessageHeaderAccessor.SESSION_ID_HEADER to "sess-1",
+            SimpMessageHeaderAccessor.SUBSCRIPTION_ID_HEADER to "sub-9"
+        )
+
+        tracker.onSubscribe(SessionSubscribeEvent(this, GenericMessage(ByteArray(0), MessageHeaders(headers))))
+
+        // 여기서 세면 한 사람이 2명으로 잡힌다
+        verifyNoInteractions(valOps)
+        verify(redis, never()).convertAndSend(anyString(), any())
     }
 
     @Test

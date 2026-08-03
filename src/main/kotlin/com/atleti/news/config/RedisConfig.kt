@@ -1,6 +1,8 @@
 package com.atleti.news.config
 
 import com.atleti.news.service.ChatMessageRelay
+import com.atleti.news.service.ChatPresenceRelay
+import com.atleti.news.service.ChatPresenceTracker
 import com.atleti.news.service.ChatService
 import org.slf4j.LoggerFactory
 import org.springframework.boot.ApplicationRunner
@@ -37,12 +39,14 @@ class RedisConfig {
     fun redisConnectionCheck(
         factory: RedisConnectionFactory,
         container: RedisMessageListenerContainer,
-        chatMessageRelay: ChatMessageRelay
+        chatMessageRelay: ChatMessageRelay,
+        chatPresenceRelay: ChatPresenceRelay
     ) = ApplicationRunner {
         try {
             factory.connection.use { it.ping() }
             container.addMessageListener(chatMessageRelay, ChannelTopic(ChatService.CHANNEL))
-            log.info("✅ Redis 연결 확인 완료 — 채팅 구독 시작")
+            container.addMessageListener(chatPresenceRelay, ChannelTopic(ChatPresenceTracker.PRESENCE_CHANNEL))
+            log.info("✅ Redis 연결 확인 완료 — 채팅/접속자 수 구독 시작")
         } catch (e: Exception) {
             log.warn("⚠️ Redis 연결 실패 — 조회수/채팅 없이 기동합니다: {}", e.message)
         }
