@@ -87,7 +87,37 @@ class ChatRoomIntegrationTest {
     fun tearDown() {
         opened.forEach { runCatching { it.disconnect() } }
         opened.clear()
-        if (redisAvailable()) clearChatKeys()
+        if (redisAvailable()) {
+            // disconnect는 비동기다. 카운터가 0으로 내려간 걸 확인한 뒤에 키를 지워야
+            // 늦게 도착한 감소가 다음 테스트에서 INCR한 값을 갉아먹지 않는다.
+            listOf(FREE, MATCH_ROOM).forEach(::awaitDrained)
+            clearChatKeys()
+        }
+    }
+
+    /** 남아 있던 세션의 감소가 모두 반영될 때까지 기다린다 */
+    private fun awaitDrained(room: String) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            val v = runCatching { redis.opsForValue().get("chat:online:$room")?.toLongOrNull() }.getOrNull() ?: 0
+            if (v <= 0) return
+            Thread.sleep(50)
+        }
+    }
+
+    /**
+     * 접속자 수가 기대값이 될 때까지 기다린 뒤 단언한다.
+     * STOMP 구독/해제는 서버에서 비동기로 처리되므로 연결 직후 조회하면 아직 0일 수 있다.
+     */
+    private fun awaitOnlineCount(room: String, expected: Int) {
+        val deadline = System.currentTimeMillis() + WAIT_SEC * 1_000
+        var actual: Any? = null
+        while (System.currentTimeMillis() < deadline) {
+            actual = roomInfo(room)["onlineCount"]
+            if (actual == expected) return
+            Thread.sleep(100)
+        }
+        assertEquals(expected, actual, "접속자 수가 ${expected}이 되지 않았습니다 (room=$room)")
     }
 
     private fun clearChatKeys() {
@@ -204,9 +234,12 @@ class ChatRoomIntegrationTest {
     @Test
     @DisplayName("presence 구독은 접속자로 세지 않는다")
     fun presenceSubscriptionIsNotCountedAsParticipant() {
-        // 한 사람이 방 1 + presence 1 = 2개를 구독하지만 인원은 1명이어야 한다
-        Peer(IP_A).connect(FREE)
-        assertEquals(1, roomInfo(FREE)["onlineCount"])
+        // 한 사람이 방 1 + presence 1 + 에러 1 = 3개를 구독하지만 인원은 1명이어야 한다
+        val a = Peer(IP_A).connect(FREE)
+
+        // 내 입장 이벤트를 먼저 기다린다 — 구독이 서버에 반영된 시점을 잡기 위해
+        assertEquals(1, a.presence.next()?.get("onlineCount"))
+        awaitOnlineCount(FREE, 1)
     }
 
     @Test
