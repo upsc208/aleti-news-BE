@@ -64,6 +64,77 @@ class ChatServiceTest {
         )
     }
 
+    /** alwaysOpen 스위치를 끈 인스턴스 — 방별 오픈 판정을 실제로 확인하기 위해 */
+    private fun strictChatService() = ChatService(
+        redis = redis,
+        objectMapper = objectMapper,
+        upcomingMatchRepository = upcomingMatchRepository,
+        matchResultRepository = matchResultRepository,
+        slangFilterService = slangFilterService,
+        alwaysOpen = false,
+        ipSalt = "test-salt"
+    )
+
+    @Test
+    @DisplayName("자유 채팅방은 CHAT_ALWAYS_OPEN을 꺼도 항상 열려 있다")
+    fun testFreeRoomAlwaysOpen() {
+        val strict = strictChatService()
+
+        assertEquals(true, strict.isOpen(ChatService.FREE_ROOM_ID))
+        // 자유방은 킥오프를 따질 필요가 없으므로 DB를 건드리지 않는다
+        verifyNoInteractions(upcomingMatchRepository)
+
+        // 킥오프 정보가 없는 일반 방은 닫혀 있어야 한다 — 자유방만 예외라는 뜻
+        assertEquals(false, strict.isOpen("5868012"))
+        verify(upcomingMatchRepository, times(1)).findByMatchId("5868012")
+    }
+
+    @Test
+    @DisplayName("자유 채팅방 메시지는 만료시키지 않고 100건 상한만 적용한다")
+    fun testFreeRoomHasNoExpiry() {
+        `when`(valOps.increment(anyString())).thenReturn(1L)
+        `when`(hashOps.get(anyString(), anyString())).thenReturn(null)
+        `when`(hashOps.putIfAbsent(anyString(), anyString(), anyString())).thenReturn(true)
+        `when`(listOps.leftPush(anyString(), anyString())).thenReturn(1L)
+
+        chatService.send(ChatService.FREE_ROOM_ID, "코케", "다들 안녕", "127.0.0.1")
+
+        val key = "chat:msg:${ChatService.FREE_ROOM_ID}"
+        verify(listOps, times(1)).trim(eq(key), eq(0L), eq(99L))   // 상한 100건은 유지
+        verify(redis, never()).expire(eq(key), any())              // 메시지 키에는 TTL 없음
+        verify(redis, times(1)).persist(eq(key))                   // 남아 있던 TTL 제거
+    }
+
+    @Test
+    @DisplayName("경기 채팅방 메시지는 24시간 뒤 만료된다")
+    fun testMatchRoomKeepsExpiry() {
+        `when`(valOps.increment(anyString())).thenReturn(1L)
+        `when`(hashOps.get(anyString(), anyString())).thenReturn(null)
+        `when`(hashOps.putIfAbsent(anyString(), anyString(), anyString())).thenReturn(true)
+        `when`(listOps.leftPush(anyString(), anyString())).thenReturn(1L)
+
+        chatService.send("5868012", "코케", "다들 안녕", "127.0.0.1")
+
+        verify(redis, times(1)).expire(eq("chat:msg:5868012"), eq(java.time.Duration.ofHours(24)))
+        verify(redis, never()).persist(eq("chat:msg:5868012"))
+    }
+
+    @Test
+    @DisplayName("자유 채팅방 닉네임 장부는 30일, 경기 채팅방은 24시간 유지된다")
+    fun testNicknameLedgerTtlPerRoom() {
+        `when`(valOps.increment(anyString())).thenReturn(1L)
+        `when`(hashOps.get(anyString(), anyString())).thenReturn(null)
+        `when`(hashOps.putIfAbsent(anyString(), anyString(), anyString())).thenReturn(true)
+        `when`(listOps.leftPush(anyString(), anyString())).thenReturn(1L)
+
+        chatService.send(ChatService.FREE_ROOM_ID, "코케", "안녕", "10.0.0.1")
+        verify(redis, times(1)).expire(eq("chat:nick:free"), eq(java.time.Duration.ofDays(30)))
+        verify(redis, times(1)).expire(eq("chat:ipnick:free"), eq(java.time.Duration.ofDays(30)))
+
+        chatService.send("5868012", "코케", "안녕", "10.0.0.1")
+        verify(redis, times(1)).expire(eq("chat:nick:5868012"), eq(java.time.Duration.ofHours(24)))
+    }
+
     @Test
     @DisplayName("정상 메시지 전송 시 Redis 저장 및 PUBLISH가 수행된다")
     fun testSendSuccess() {

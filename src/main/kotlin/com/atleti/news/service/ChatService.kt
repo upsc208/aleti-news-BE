@@ -48,12 +48,30 @@ class ChatService(
 ) {
     companion object {
         const val CHANNEL = "chat.messages"   // Pub/Sub 채널 (단일 채널, 페이로드에 matchId 포함)
+
+        /**
+         * 상시 개방 자유 채팅방의 방 키.
+         * 경기 방 키는 FotMob 숫자 ID이므로 문자열 "free"와 충돌하지 않는다.
+         */
+        const val FREE_ROOM_ID = "free"
+
         private const val BANNED_KEY = "chat:banned"
         private const val MAX_RECENT = 100L
         private const val MAX_CONTENT_LENGTH = 200
         private const val RATE_LIMIT_WINDOW = 10L   // 초
         private const val RATE_LIMIT_MAX = 5        // 창 내 최대 전송 수
         private val URL_PATTERN = Regex("(?i)(https?://|www\\.)")
+
+        private val ROOM_TTL: Duration = Duration.ofHours(24)
+
+        /**
+         * 자유 채팅방 닉네임 장부 TTL.
+         * 메시지와 달리 장부는 상한이 없어 무기한 두면 방문자 수만큼 계속 커진다.
+         * 활동할 때마다 갱신되므로 계속 쓰는 사람은 닉네임을 잃지 않는다.
+         */
+        private val FREE_NICK_TTL: Duration = Duration.ofDays(30)
+
+        fun isFreeRoom(matchId: String) = matchId == FREE_ROOM_ID
     }
 
     fun send(matchId: String, nickname: String, content: String, ip: String) {
@@ -74,9 +92,17 @@ class ChatService(
         val json = objectMapper.writeValueAsString(message)
         val key = "chat:msg:$matchId"
 
-        redis.opsForList().leftPush(key, json)
+        val size = redis.opsForList().leftPush(key, json)
         redis.opsForList().trim(key, 0, MAX_RECENT - 1)
-        redis.expire(key, Duration.ofHours(24))
+        if (isFreeRoom(matchId)) {
+            // 자유 채팅방은 만료시키지 않는다 — 하루 조용했다고 대화가 통째로 사라지면
+            // "항상 열려 있는 방"이 고장난 것처럼 보인다. 크기는 위 LTRIM이 100건으로 고정하므로
+            // TTL이 없어도 늘어나지 않는다 (최대 ~70KB).
+            // 첫 메시지일 때만 혹시 남아 있을 수 있는 예전 TTL을 떼어낸다.
+            if (size == 1L) redis.persist(key)
+        } else {
+            redis.expire(key, ROOM_TTL)
+        }
         redis.convertAndSend(CHANNEL, json)
     }
 
@@ -88,15 +114,27 @@ class ChatService(
         return reserveNickname(matchId, cleanNickname, ip)
     }
 
-    /** 입장 시 보여줄 최근 메시지 — 오래된 것부터. 닫힌 방도 TTL 내 열람은 허용 (6.6) */
+    /**
+     * 입장 시 보여줄 최근 메시지 — 오래된 것부터. 닫힌 방도 TTL 내 열람은 허용 (6.6).
+     *
+     * Redis가 없으면 빈 목록을 돌려준다 (fail-open, redis-design 5).
+     * 예전에는 예외가 그대로 올라가 `GET /api/chat/{matchId}`가 500을 냈다 —
+     * 상시 개방인 자유 채팅방은 항상 열려 있는 진입점이라 페이지 자체가 깨진다.
+     */
     fun recentMessages(matchId: String): List<ChatMessage> =
-        (redis.opsForList().range("chat:msg:$matchId", 0, MAX_RECENT - 1) ?: emptyList())
-            .map { objectMapper.readValue(it, ChatMessage::class.java) }
-            .reversed()
+        try {
+            (redis.opsForList().range("chat:msg:$matchId", 0, MAX_RECENT - 1) ?: emptyList())
+                .mapNotNull { runCatching { objectMapper.readValue(it, ChatMessage::class.java) }.getOrNull() }
+                .reversed()
+        } catch (e: Exception) {
+            println("⚠️ [Chat] 최근 메시지 조회 실패 (matchId=$matchId): ${e.message}")
+            emptyList()
+        }
 
     // --- 방 오픈 판정 (6.6) ---
 
     fun isOpen(matchId: String): Boolean {
+        if (isFreeRoom(matchId)) return true   // 자유 채팅방은 킥오프와 무관하게 상시 개방
         if (alwaysOpen) return true
         val kickoff = findKickoffTime(matchId) ?: return false
         val now = OffsetDateTime.now()
@@ -196,6 +234,9 @@ class ChatService(
             if (normalize(myNickname) != normalize(nickname)) {
                 throw ChatException("이 방에서는 '${myNickname}'(으)로 이미 참여 중이에요. 닉네임은 바꿀 수 없어요.")
             }
+            // 활동 중이면 장부 수명을 늘려준다 — 자유 채팅방에서 잠시 안 왔다고
+            // 쓰던 닉네임을 남에게 뺏기지 않도록.
+            touchNicknameLedgers(matchId, nickKey, ipKey)
             return myNickname
         }
 
@@ -206,9 +247,15 @@ class ChatService(
             throw ChatException("이미 사용 중인 닉네임이에요. 다른 닉네임을 입력해주세요.")
         }
         hash.put(ipKey, ip, nickname)
-        redis.expire(nickKey, Duration.ofHours(24))
-        redis.expire(ipKey, Duration.ofHours(24))
+        touchNicknameLedgers(matchId, nickKey, ipKey)
         return nickname
+    }
+
+    /** 닉네임 장부 수명 — 경기 방은 방과 함께 24h, 자유 채팅방은 30일 */
+    private fun touchNicknameLedgers(matchId: String, nickKey: String, ipKey: String) {
+        val ttl = if (isFreeRoom(matchId)) FREE_NICK_TTL else ROOM_TTL
+        redis.expire(nickKey, ttl)
+        redis.expire(ipKey, ttl)
     }
 
     /** 유사 닉네임 사칭 방지용 정규화: trim → 소문자 → 연속 공백 축약 ("Koke" ≒ "koke ") */

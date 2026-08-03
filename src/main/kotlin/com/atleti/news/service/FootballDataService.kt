@@ -156,6 +156,8 @@ class FootballDataService(
     }
 
     private fun mapToUpcomingMatch(entity: UpcomingMatchEntity) = UpcomingMatch(
+        // 경기 전 채팅방 키. 이게 없으면 프론트가 킥오프 전에 방으로 들어갈 방법이 없다
+        matchId = entity.matchId,
         opponent = entity.opponent,
         matchDate = entity.matchDate,
         isHome = entity.isHome,
@@ -189,4 +191,11 @@ data class PlayerInfo(val name: String, val shirt: String?)
 data class TeamLineupInfo(val formation: String?, val starters: List<PlayerInfo>)
 data class LineupInfo(val home: TeamLineupInfo, val away: TeamLineupInfo)
 
-data class UpcomingMatch(val opponent: String, val matchDate: String, val isHome: Boolean, val tournament: String)
+data class UpcomingMatch(
+    /** 채팅방 키 (ChatService.findKickoffTime이 이 값으로 킥오프를 찾는다). 스크랩에서 못 얻으면 null */
+    val matchId: String?,
+    val opponent: String,
+    val matchDate: String,
+    val isHome: Boolean,
+    val tournament: String
+)

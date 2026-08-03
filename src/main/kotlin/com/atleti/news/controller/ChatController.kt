@@ -53,7 +53,10 @@ class ChatController(
     fun handleChatError(e: ChatException): Map<String, String> =
         mapOf("error" to (e.message ?: "요청을 처리할 수 없습니다."))
 
-    /** 입장 시 방 정보 로딩용 REST — 오픈 여부, 접속자 수, 최근 메시지 100개 */
+    /**
+     * 입장 시 방 정보 로딩용 REST — 오픈 여부, 접속자 수, 최근 메시지 100개.
+     * matchId는 경기 방이면 FotMob 숫자 ID, 자유 채팅방이면 "free" (ChatService.FREE_ROOM_ID).
+     */
     @GetMapping("/api/chat/{matchId}")
     @ResponseBody
     fun roomInfo(@PathVariable matchId: String): ChatRoomResponse =
