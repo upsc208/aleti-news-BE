@@ -15,6 +15,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # 채팅 통합 테스트(ChatRoomIntegrationTest)가 실제 Redis를 쓴다.
+    # 없으면 그 테스트만 조용히 건너뛰므로, 여기 두어야 실제 검증 관문이 된다.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       # 코드 받기
       - uses: actions/checkout@v4
@@ -28,7 +42,8 @@ jobs:
       # Gradle 의존성 캐싱 — 두 번째 실행부터 빌드 시간 단축
       - uses: gradle/actions/setup-gradle@v4
 
-      # 빌드 + 테스트 (테스트는 h2 프로파일이라 외부 DB/API 키 불필요)
+      # 빌드 + 테스트 (h2 프로파일이라 외부 DB/API 키 불필요.
+      # 채팅 통합 테스트만 위 redis 서비스를 사용하며, 테스트 전용 DB 인덱스 15를 쓴다)
       - name: Build & test
         run: ./gradlew build
 
