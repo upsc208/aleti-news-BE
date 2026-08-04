@@ -120,19 +120,37 @@ class ChatServiceTest {
     }
 
     @Test
-    @DisplayName("자유 채팅방 닉네임 장부는 30일, 경기 채팅방은 24시간 유지된다")
-    fun testNicknameLedgerTtlPerRoom() {
+    @DisplayName("닉네임 장부는 자유 채팅방도 24시간 유지된다")
+    fun testNicknameLedgerTtl() {
         `when`(valOps.increment(anyString())).thenReturn(1L)
         `when`(hashOps.get(anyString(), anyString())).thenReturn(null)
         `when`(hashOps.putIfAbsent(anyString(), anyString(), anyString())).thenReturn(true)
         `when`(listOps.leftPush(anyString(), anyString())).thenReturn(1L)
 
+        // 한때 자유방만 30일이었는데, 한 번 써본 이름이 한 달간 잠기는 문제가 있었다
         chatService.send(ChatService.FREE_ROOM_ID, "코케", "안녕", "10.0.0.1")
-        verify(redis, times(1)).expire(eq("chat:nick:free"), eq(java.time.Duration.ofDays(30)))
-        verify(redis, times(1)).expire(eq("chat:ipnick:free"), eq(java.time.Duration.ofDays(30)))
+        verify(redis, times(1)).expire(eq("chat:nick:free"), eq(java.time.Duration.ofHours(24)))
+        verify(redis, times(1)).expire(eq("chat:ipnick:free"), eq(java.time.Duration.ofHours(24)))
 
         chatService.send("5868012", "코케", "안녕", "10.0.0.1")
         verify(redis, times(1)).expire(eq("chat:nick:5868012"), eq(java.time.Duration.ofHours(24)))
+    }
+
+    @Test
+    @DisplayName("같은 IP에서 서로 다른 닉네임으로 참여할 수 있다 (공유기·CGNAT)")
+    fun testSameIpCanUseDifferentNicknames() {
+        `when`(valOps.increment(anyString())).thenReturn(1L)
+        `when`(listOps.leftPush(anyString(), anyString())).thenReturn(1L)
+        // 이 IP는 이미 "코케"로 장부에 올라 있는 상태
+        `when`(hashOps.get(eq("chat:ipnick:free"), eq("10.0.0.1"))).thenReturn("코케")
+        `when`(hashOps.putIfAbsent(anyString(), anyString(), anyString())).thenReturn(true)
+
+        // 같은 IP의 다른 사람이 다른 닉네임으로 보내도 거절되면 안 된다.
+        // 예전에는 "이 방에서는 '코케'로 이미 참여 중이에요"로 막혀,
+        // 같은 공유기를 쓰는 사람 전부가 들어오지 못했다.
+        chatService.send(ChatService.FREE_ROOM_ID, "그리즈만", "저도 왔어요", "10.0.0.1")
+
+        verify(listOps, times(1)).leftPush(eq("chat:msg:free"), contains("그리즈만"))
     }
 
     @Test

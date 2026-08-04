@@ -275,6 +275,27 @@ class ChatRoomIntegrationTest {
     }
 
     @Test
+    @DisplayName("같은 IP의 여러 사람이 각자 다른 닉네임으로 들어온다 (공유기·CGNAT)")
+    fun samePublicIpCanHostMultiplePeople() {
+        // 집 공유기 하나에 폰과 PC가 붙으면 서버에는 같은 공인 IP로 보인다.
+        // 예전에는 "IP당 닉네임 1개" 제한 때문에 먼저 들어온 사람이 나머지를 전부 막았다.
+        val phone = Peer(IP_A)
+        val laptop = Peer(IP_A)
+
+        assertEquals(HttpStatus.OK, phone.reserveNickname(FREE, "코케"))
+        assertEquals(HttpStatus.OK, laptop.reserveNickname(FREE, "그리즈만"),
+            "같은 IP의 두 번째 사람이 막혔습니다")
+
+        phone.connect(FREE)
+        laptop.connect(FREE)
+        phone.send(FREE, "코케", "폰에서 보냅니다")
+
+        val got = laptop.messages.next()
+        assertNotNull(got, "같은 IP의 다른 사람에게 메시지가 가지 않았습니다 (errors=${laptop.errors})")
+        assertEquals("폰에서 보냅니다", got["content"])
+    }
+
+    @Test
     @DisplayName("메시지에 ipHash만 실리고 원본 IP는 나가지 않는다")
     fun rawIpIsNeverExposed() {
         val a = Peer(IP_A).connect(FREE)

@@ -64,13 +64,6 @@ class ChatService(
 
         private val ROOM_TTL: Duration = Duration.ofHours(24)
 
-        /**
-         * 자유 채팅방 닉네임 장부 TTL.
-         * 메시지와 달리 장부는 상한이 없어 무기한 두면 방문자 수만큼 계속 커진다.
-         * 활동할 때마다 갱신되므로 계속 쓰는 사람은 닉네임을 잃지 않는다.
-         */
-        private val FREE_NICK_TTL: Duration = Duration.ofDays(30)
-
         fun isFreeRoom(matchId: String) = matchId == FREE_ROOM_ID
     }
 
@@ -215,47 +208,47 @@ class ChatService(
             .joinToString("") { "%02x".format(it) }
             .take(4)
 
-    // --- 닉네임 정책 (6.5): 방 단위 선착순 선점 + IP당 1개 고정 ---
+    // --- 닉네임 정책 (6.5): 방 단위 선착순 선점 ---
 
     /**
      * 두 장부를 유지한다 (둘 다 방 TTL 24h와 함께 소멸):
      *   chat:nick:{matchId}   정규화닉네임 → IP   : 선착순 선점 (남의 닉네임 사용 차단)
-     *   chat:ipnick:{matchId} IP → 표시닉네임     : IP당 1개 고정 (닉네임 갈아타기 차단)
-     * 반환값은 이 방에서 확정된 닉네임 — 재접속 시 입력이 달라도 원래 닉네임으로 고정.
+     *   chat:ipnick:{matchId} IP → 최근 표시닉네임 : 관리자 참가자 목록용 (차단할 IP 찾기)
+     *
+     * "IP당 닉네임 1개" 제한은 두지 않는다. 공유기·카페·통신사 CGNAT 뒤에서는 서로 다른
+     * 사람이 같은 공인 IP를 쓰므로, 먼저 들어온 사람이 나머지 전부를 막아버린다.
+     * 닉네임 갈아타기는 아래 것들이 이미 막고 있어 이 제한은 중복 방어였다:
+     *   - 닉네임 선착순 선점 (남의 이름 사칭 불가)
+     *   - IP당 rate limit (이름을 바꿔도 전송량 상한은 그대로)
+     *   - 메시지에 실리는 ipHash (이름을 바꿔도 같은 사람인 게 화면에 보인다)
      */
     private fun reserveNickname(matchId: String, nickname: String, ip: String): String {
         val nickKey = "chat:nick:$matchId"
         val ipKey = "chat:ipnick:$matchId"
         val hash = redis.opsForHash<String, String>()
 
-        // 이미 이 방에서 닉네임을 정한 IP인가?
-        val myNickname = hash.get(ipKey, ip)
-        if (myNickname != null) {
-            if (normalize(myNickname) != normalize(nickname)) {
-                throw ChatException("이 방에서는 '${myNickname}'(으)로 이미 참여 중이에요. 닉네임은 바꿀 수 없어요.")
-            }
-            // 활동 중이면 장부 수명을 늘려준다 — 자유 채팅방에서 잠시 안 왔다고
-            // 쓰던 닉네임을 남에게 뺏기지 않도록.
-            touchNicknameLedgers(matchId, nickKey, ipKey)
-            return myNickname
-        }
-
-        // 처음 정하는 IP — 선점 시도 (HSETNX: 원자적이라 동시 시도에도 한 명만 성공)
+        // 선점 시도 (HSETNX: 원자적이라 동시 시도에도 한 명만 성공).
+        // 이미 내 IP가 잡고 있던 이름이면 그대로 다시 쓴다 — 재접속 시 이름을 잃지 않도록.
         val normalized = normalize(nickname)
         val reserved = hash.putIfAbsent(nickKey, normalized, ip)
         if (!reserved && hash.get(nickKey, normalized) != ip) {
             throw ChatException("이미 사용 중인 닉네임이에요. 다른 닉네임을 입력해주세요.")
         }
+        // 관리자 참가자 목록용 — 도배하는 사람의 차단할 IP를 찾는 통로다
         hash.put(ipKey, ip, nickname)
-        touchNicknameLedgers(matchId, nickKey, ipKey)
+        touchNicknameLedgers(nickKey, ipKey)
         return nickname
     }
 
-    /** 닉네임 장부 수명 — 경기 방은 방과 함께 24h, 자유 채팅방은 30일 */
-    private fun touchNicknameLedgers(matchId: String, nickKey: String, ipKey: String) {
-        val ttl = if (isFreeRoom(matchId)) FREE_NICK_TTL else ROOM_TTL
-        redis.expire(nickKey, ttl)
-        redis.expire(ipKey, ttl)
+    /**
+     * 닉네임 장부 수명 — 자유 채팅방도 경기 방과 같이 24h.
+     * 한때 자유방만 30일로 늘렸었는데(잠시 안 와도 이름을 지키도록),
+     * IP당 1개 제한과 맞물려 "한 번 써본 이름이 한 달간 잠기는" 상태가 됐다.
+     * 제한을 없앤 지금은 늘려둘 이유가 없고, 짧아야 안 쓰는 이름이 제때 풀린다.
+     */
+    private fun touchNicknameLedgers(nickKey: String, ipKey: String) {
+        redis.expire(nickKey, ROOM_TTL)
+        redis.expire(ipKey, ROOM_TTL)
     }
 
     /** 유사 닉네임 사칭 방지용 정규화: trim → 소문자 → 연속 공백 축약 ("Koke" ≒ "koke ") */
