@@ -9,8 +9,10 @@ import org.springframework.web.socket.server.HandshakeInterceptor
 /**
  * WebSocket 핸드셰이크(최초 HTTP 요청) 시점에 클라이언트 IP를 세션에 저장한다.
  * STOMP 메시지에는 HTTP 헤더가 없어서 IP를 알 수 없으므로,
- * 유일하게 HTTP인 핸드셰이크 순간에 잡아 세션 속성으로 넘긴다 (rate limit용).
- * X-Forwarded-For 우선 — Cloudflare 뒤에서는 remoteAddress가 CF IP이기 때문 (조회수와 동일 로직).
+ * 유일하게 HTTP인 핸드셰이크 순간에 잡아 세션 속성으로 넘긴다 (rate limit·차단·ipHash용).
+ *
+ * 추출은 [ClientIp] 한 곳에서만 한다 — REST 경로와 값이 어긋나면
+ * 같은 사람이 두 사람으로 보인다.
  */
 @Component
 class IpHandshakeInterceptor : HandshakeInterceptor {
@@ -21,10 +23,7 @@ class IpHandshakeInterceptor : HandshakeInterceptor {
         wsHandler: WebSocketHandler,
         attributes: MutableMap<String, Any>
     ): Boolean {
-        attributes["ip"] = request.headers.getFirst("X-Forwarded-For")
-            ?.split(",")?.firstOrNull()?.trim()
-            ?: request.remoteAddress?.address?.hostAddress
-            ?: "unknown"
+        attributes[ChatClient.IP_ATTRIBUTE] = ClientIp.of(request)
         return true
     }
 

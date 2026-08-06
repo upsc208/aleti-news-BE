@@ -1,5 +1,6 @@
 package com.atleti.news.chat
 
+import com.atleti.news.config.ChatClient
 import com.atleti.news.service.ChatService
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -71,6 +72,9 @@ class ChatRoomIntegrationTest {
         const val IP_A = "203.0.113.10"
         const val IP_B = "198.51.100.77"
         const val IP_C = "192.0.2.55"
+        // 브라우저 식별자 — 프론트가 localStorage에 두는 UUID 자리 (ChatClient.sanitize 형식)
+        const val CLIENT_1 = "client-aaaaaaaa-1111"
+        const val CLIENT_2 = "client-bbbbbbbb-2222"
         const val WAIT_SEC = 10L
     }
 
@@ -130,7 +134,7 @@ class ChatRoomIntegrationTest {
 
     // --- 테스트 참가자 ---
 
-    private inner class Peer(val ip: String) {
+    private inner class Peer(val ip: String, val clientId: String? = null) {
         val messages = LinkedBlockingQueue<Map<String, Any?>>()
         val errors = LinkedBlockingQueue<Map<String, Any?>>()
         val presence = LinkedBlockingQueue<Map<String, Any?>>()
@@ -139,8 +143,15 @@ class ChatRoomIntegrationTest {
         fun connect(room: String): Peer {
             val stomp = WebSocketStompClient(SockJsClient(listOf(WebSocketTransport(StandardWebSocketClient()))))
             val handshake = WebSocketHttpHeaders().apply { add("X-Forwarded-For", ip) }
+            // 브라우저 식별자는 SockJS 핸드셰이크에 실을 수 없어 STOMP CONNECT 헤더로 보낸다
+            val connectHeaders = StompHeaders().apply {
+                clientId?.let { add(ChatClient.STOMP_HEADER, it) }
+            }
             session = stomp
-                .connectAsync("ws://localhost:$port/ws", handshake, object : StompSessionHandlerAdapter() {})
+                .connectAsync(
+                    "ws://localhost:$port/ws", handshake, connectHeaders,
+                    object : StompSessionHandlerAdapter() {}
+                )
                 .get(WAIT_SEC, TimeUnit.SECONDS)
             opened += session
 
@@ -175,6 +186,7 @@ class ChatRoomIntegrationTest {
             val headers = HttpHeaders().apply {
                 contentType = MediaType.APPLICATION_JSON
                 add("X-Forwarded-For", ip)
+                clientId?.let { add(ChatClient.HTTP_HEADER, it) }
             }
             val body = objectMapper.writeValueAsString(mapOf("nickname" to nickname))
             val res = rest.exchange(
@@ -293,6 +305,51 @@ class ChatRoomIntegrationTest {
         val got = laptop.messages.next()
         assertNotNull(got, "같은 IP의 다른 사람에게 메시지가 가지 않았습니다 (errors=${laptop.errors})")
         assertEquals("폰에서 보냅니다", got["content"])
+    }
+
+    @Test
+    @DisplayName("IP가 바뀌어도 같은 브라우저는 자기 닉네임을 그대로 쓴다")
+    fun sameBrowserKeepsNicknameAcrossIpChange() {
+        // 탭을 닫았다 새로 열거나 모바일에서 재접속하면 공인 IP가 바뀔 수 있다.
+        // 예전에는 닉네임 주인을 IP로 판정해서, 이때 자기 이름에 자기가 24시간 잠겼다.
+        val browser = Peer(IP_A, CLIENT_1)
+        assertEquals(HttpStatus.OK, browser.reserveNickname(FREE, "코케"))
+
+        val sameBrowserNewIp = Peer(IP_B, CLIENT_1)
+        assertEquals(
+            HttpStatus.OK, sameBrowserNewIp.reserveNickname(FREE, "코케"),
+            "같은 브라우저인데 IP가 바뀌었다고 자기 닉네임에서 잠겼습니다"
+        )
+
+        // 전송 경로(STOMP)도 같은 판정을 써야 한다 — 예전에는 REST와 IP 추출 방식이 달랐다
+        sameBrowserNewIp.connect(FREE)
+        val witness = Peer(IP_C, CLIENT_2).connect(FREE)
+        sameBrowserNewIp.send(FREE, "코케", "새 탭에서 보냅니다")
+
+        val got = witness.messages.next()
+        assertNotNull(got, "IP가 바뀐 뒤 메시지가 막혔습니다 (errors=${sameBrowserNewIp.errors})")
+        assertEquals("새 탭에서 보냅니다", got["content"])
+    }
+
+    @Test
+    @DisplayName("같은 IP라도 다른 브라우저는 남의 닉네임을 못 가져간다")
+    fun differentBrowserOnSameIpCannotTakeNickname() {
+        // 공유기·카페처럼 IP를 공유하는 곳 — IP 기준이었을 땐 그냥 이어받을 수 있었다
+        assertEquals(HttpStatus.OK, Peer(IP_A, CLIENT_1).reserveNickname(FREE, "코케"))
+        assertEquals(HttpStatus.CONFLICT, Peer(IP_A, CLIENT_2).reserveNickname(FREE, "코케"))
+    }
+
+    @Test
+    @DisplayName("닉네임이 겹치면 프론트가 모달을 다시 열 수 있게 code를 함께 준다")
+    fun nicknameConflictCarriesCode() {
+        assertEquals(HttpStatus.OK, Peer(IP_A, CLIENT_1).reserveNickname(FREE, "코케"))
+
+        val taken = Peer(IP_B, CLIENT_2).connect(FREE)
+        taken.send(FREE, "코케", "이 이름 쓸게요")
+
+        val error = taken.errors.next()
+        assertNotNull(error, "거절 사유를 받지 못했습니다")
+        assertEquals("NICKNAME_TAKEN", error["code"], "사유 코드가 없으면 프론트가 모달을 못 연다: $error")
     }
 
     @Test

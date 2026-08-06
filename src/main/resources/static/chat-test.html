@@ -56,11 +56,19 @@
       const matchId = document.getElementById('matchId').value;
       const nickname = document.getElementById('nickname').value;
 
+      // ⓪-0 이 브라우저의 고정 식별자 — 닉네임 주인 판정에 쓰인다 (ChatClient.kt).
+      // IP가 아니라 이 값이 주인이라서, IP가 바뀌어도 자기 이름을 그대로 쓸 수 있다.
+      let clientId = localStorage.getItem('atleti_chat_client_id');
+      if (!clientId) {
+        clientId = 'c-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
+        localStorage.setItem('atleti_chat_client_id', clientId);
+      }
+
       // ⓪-1 닉네임 사전 선점 REST API 호출 (중복/금칙어 사전 검증)
       try {
         const nickRes = await fetch('/api/chat/' + matchId + '/nickname', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Chat-Client-Id': clientId },
           body: JSON.stringify({ nickname: nickname })
         });
         if (!nickRes.ok) {
@@ -79,7 +87,8 @@
       room.messages.forEach(appendMessage);
       // ① 핸드셰이크: /ws로 접속 (SockJS가 WebSocket 안 되면 자동 fallback)
       stomp = Stomp.over(new SockJS('/ws'));
-      stomp.connect({}, () => {
+      // SockJS 핸드셰이크에는 커스텀 헤더를 못 실어서 CONNECT 프레임으로 보낸다
+      stomp.connect({ 'x-chat-client-id': clientId }, () => {
         btn.disabled = false;
         document.getElementById('status').textContent =
           '🟢 접속됨 (방 ' + matchId + ', 나 포함 ' + (room.onlineCount + 1) + '명' + (room.open ? '' : ', 방 닫힘') + ')';

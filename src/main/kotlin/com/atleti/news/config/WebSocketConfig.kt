@@ -1,7 +1,13 @@
 package com.atleti.news.config
 
 import org.springframework.context.annotation.Configuration
+import org.springframework.messaging.Message
+import org.springframework.messaging.MessageChannel
+import org.springframework.messaging.simp.config.ChannelRegistration
 import org.springframework.messaging.simp.config.MessageBrokerRegistry
+import org.springframework.messaging.simp.stomp.StompCommand
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor
+import org.springframework.messaging.support.ChannelInterceptor
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer
@@ -29,5 +35,26 @@ class WebSocketConfig(
         // "/queue"는 개인 전달용 (정책 위반 에러를 보낸 사람에게만 회신)
         registry.enableSimpleBroker("/topic", "/queue")
         registry.setApplicationDestinationPrefixes("/app") // 서버 로직 호출 prefix
+    }
+
+    /**
+     * CONNECT 프레임에 실려 온 브라우저 식별자를 세션에 옮겨 담는다 ([ChatClient]).
+     *
+     * SockJS 핸드셰이크는 브라우저가 커스텀 헤더를 붙일 수 없어서 IP처럼 핸드셰이크에서
+     * 받을 수 없다. 반면 STOMP CONNECT는 클라이언트가 헤더를 자유롭게 실어 보낼 수 있다.
+     * 여기서 한 번 세션 속성에 넣어두면 이후 SEND 프레임에서 그대로 꺼내 쓸 수 있다
+     * (sessionAttributes는 WebSocket 세션의 맵 그 자체라 연결 내내 유지된다).
+     */
+    override fun configureClientInboundChannel(registration: ChannelRegistration) {
+        registration.interceptors(object : ChannelInterceptor {
+            override fun preSend(message: Message<*>, channel: MessageChannel): Message<*> {
+                val accessor = StompHeaderAccessor.wrap(message)
+                if (accessor.command == StompCommand.CONNECT) {
+                    ChatClient.sanitize(accessor.getFirstNativeHeader(ChatClient.STOMP_HEADER))
+                        ?.let { accessor.sessionAttributes?.put(ChatClient.SESSION_ATTRIBUTE, it) }
+                }
+                return message
+            }
+        })
     }
 }

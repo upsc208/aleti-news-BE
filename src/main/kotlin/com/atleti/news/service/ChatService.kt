@@ -1,5 +1,7 @@
 package com.atleti.news.service
 
+import com.atleti.news.config.ChatClient
+import com.atleti.news.config.ClientIp
 import com.atleti.news.dto.ChatMessage
 import com.atleti.news.repository.MatchResultRepository
 import com.atleti.news.repository.UpcomingMatchRepository
@@ -12,8 +14,19 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
 
-/** 채팅 정책 위반 (닫힌 방, 도배, 금지된 내용 등) — 보낸 사람에게만 에러로 전달된다 */
-class ChatException(message: String) : RuntimeException(message)
+/**
+ * 채팅 정책 위반 (닫힌 방, 도배, 금지된 내용 등) — 보낸 사람에게만 에러로 전달된다.
+ *
+ * [code]는 프론트가 사유별로 다르게 반응하기 위한 것이다. 특히 [NICKNAME_TAKEN]을 받으면
+ * 닉네임 입력 모달을 다시 열어야 한다 — 문구만 보여주면 사용자는 이름을 바꿀 방법이 없어
+ * 채팅이 영영 막힌다.
+ */
+class ChatException(message: String, val code: String = REJECTED) : RuntimeException(message) {
+    companion object {
+        const val REJECTED = "REJECTED"
+        const val NICKNAME_TAKEN = "NICKNAME_TAKEN"
+    }
+}
 
 /**
  * 관리자 화면 전용 참가자 정보.
@@ -56,6 +69,12 @@ class ChatService(
         const val FREE_ROOM_ID = "free"
 
         private const val BANNED_KEY = "chat:banned"
+
+        // chat:nick 값의 접두사 — 주인이 브라우저 식별자인지 IP인지 구분한다.
+        // 접두사가 없는 값은 IP만 저장하던 옛 기록이다.
+        private const val CLIENT_OWNER_PREFIX = "cid:"
+        private const val IP_OWNER_PREFIX = "ip:"
+
         private const val MAX_RECENT = 100L
         private const val MAX_CONTENT_LENGTH = 200
         private const val RATE_LIMIT_WINDOW = 10L   // 초
@@ -67,13 +86,13 @@ class ChatService(
         fun isFreeRoom(matchId: String) = matchId == FREE_ROOM_ID
     }
 
-    fun send(matchId: String, nickname: String, content: String, ip: String) {
+    fun send(matchId: String, nickname: String, content: String, ip: String, clientId: String? = null) {
         requireRoomOpen(matchId)
         requireNotBanned(ip)
         val cleanNickname = validateNickname(nickname)
         val cleanContent = validateContent(content)
         checkRateLimit(ip)
-        val fixedNickname = reserveNickname(matchId, cleanNickname, ip)
+        val fixedNickname = reserveNickname(matchId, cleanNickname, ip, clientId)
 
         val message = ChatMessage(
             matchId = matchId,
@@ -99,12 +118,16 @@ class ChatService(
         redis.convertAndSend(CHANNEL, json)
     }
 
-    /** REST API용 닉네임 사전 선점/검증 */
-    fun reserveNicknamePublic(matchId: String, nickname: String, ip: String): String {
+    /**
+     * REST API용 닉네임 사전 선점/검증.
+     * 이미 내가 가진 이름을 다시 부르면 그대로 통과한다 (멱등) — 프론트는 저장해둔 닉네임으로
+     * 재입장할 때마다 이걸 호출해서 "아직 내 이름이 맞는지"를 확인한다.
+     */
+    fun reserveNicknamePublic(matchId: String, nickname: String, ip: String, clientId: String? = null): String {
         requireRoomOpen(matchId)
         requireNotBanned(ip)
         val cleanNickname = validateNickname(nickname)
-        return reserveNickname(matchId, cleanNickname, ip)
+        return reserveNickname(matchId, cleanNickname, ip, clientId)
     }
 
     /**
@@ -212,33 +235,57 @@ class ChatService(
 
     /**
      * 두 장부를 유지한다 (둘 다 방 TTL 24h와 함께 소멸):
-     *   chat:nick:{matchId}   정규화닉네임 → IP   : 선착순 선점 (남의 닉네임 사용 차단)
+     *   chat:nick:{matchId}   정규화닉네임 → 주인 : 선착순 선점 (남의 닉네임 사용 차단)
      *   chat:ipnick:{matchId} IP → 최근 표시닉네임 : 관리자 참가자 목록용 (차단할 IP 찾기)
      *
-     * "IP당 닉네임 1개" 제한은 두지 않는다. 공유기·카페·통신사 CGNAT 뒤에서는 서로 다른
-     * 사람이 같은 공인 IP를 쓰므로, 먼저 들어온 사람이 나머지 전부를 막아버린다.
-     * 닉네임 갈아타기는 아래 것들이 이미 막고 있어 이 제한은 중복 방어였다:
+     * **주인은 IP가 아니라 브라우저 식별자다** ([ChatClient]). IP를 주인으로 쓰던 시절에는
+     * 모바일·재접속처럼 IP가 바뀌는 상황에서 자기가 쓰던 이름에 자기가 잠겼고,
+     * 프론트는 저장된 닉네임이 있으면 입력 모달을 건너뛰므로 이름을 바꿀 방법도 없이
+     * 채팅이 영영 막혔다. 반대로 공유기·카페·CGNAT처럼 여러 사람이 한 IP를 쓰는 곳에서는
+     * 남이 내 이름을 그냥 이어받을 수도 있었다.
+     *
+     * "IP당 닉네임 1개" 제한은 두지 않는다 — 같은 이유(공유 IP)로 먼저 들어온 사람이
+     * 나머지 전부를 막아버린다. 닉네임 갈아타기는 아래 것들이 이미 막고 있다:
      *   - 닉네임 선착순 선점 (남의 이름 사칭 불가)
      *   - IP당 rate limit (이름을 바꿔도 전송량 상한은 그대로)
      *   - 메시지에 실리는 ipHash (이름을 바꿔도 같은 사람인 게 화면에 보인다)
      */
-    private fun reserveNickname(matchId: String, nickname: String, ip: String): String {
+    private fun reserveNickname(matchId: String, nickname: String, ip: String, clientId: String?): String {
         val nickKey = "chat:nick:$matchId"
         val ipKey = "chat:ipnick:$matchId"
         val hash = redis.opsForHash<String, String>()
 
         // 선점 시도 (HSETNX: 원자적이라 동시 시도에도 한 명만 성공).
-        // 이미 내 IP가 잡고 있던 이름이면 그대로 다시 쓴다 — 재접속 시 이름을 잃지 않도록.
         val normalized = normalize(nickname)
-        val reserved = hash.putIfAbsent(nickKey, normalized, ip)
-        if (!reserved && hash.get(nickKey, normalized) != ip) {
-            throw ChatException("이미 사용 중인 닉네임이에요. 다른 닉네임을 입력해주세요.")
+        val owner = ownerToken(clientId, ip)
+        if (!hash.putIfAbsent(nickKey, normalized, owner)) {
+            val current = hash.get(nickKey, normalized)
+            if (current != owner) {
+                // 예전 IP 기준 기록은 같은 IP에서 올 때 한 번 이어받는다.
+                // 이게 없으면 이번 배포 시점에 채팅 중이던 사람들이 24시간 동안
+                // 자기 이름에서 잠긴 채로 남는다.
+                if (!isLegacyIpOwner(current, ip)) {
+                    throw ChatException(
+                        "이미 사용 중인 닉네임이에요. 다른 닉네임을 입력해주세요.",
+                        ChatException.NICKNAME_TAKEN
+                    )
+                }
+                hash.put(nickKey, normalized, owner)
+            }
         }
         // 관리자 참가자 목록용 — 도배하는 사람의 차단할 IP를 찾는 통로다
         hash.put(ipKey, ip, nickname)
         touchNicknameLedgers(nickKey, ipKey)
         return nickname
     }
+
+    /** 브라우저 식별자가 있으면 그것이 주인, 없으면(구버전 프론트) 예전처럼 IP */
+    private fun ownerToken(clientId: String?, ip: String): String =
+        if (clientId.isNullOrBlank()) "$IP_OWNER_PREFIX$ip" else "$CLIENT_OWNER_PREFIX$clientId"
+
+    /** 접두사 없이 IP만 들어 있던 옛 형식(그리고 같은 IP의 새 형식)인지 */
+    private fun isLegacyIpOwner(current: String?, ip: String): Boolean =
+        current != null && ip != ClientIp.UNKNOWN && (current == ip || current == "$IP_OWNER_PREFIX$ip")
 
     /**
      * 닉네임 장부 수명 — 자유 채팅방도 경기 방과 같이 24h.

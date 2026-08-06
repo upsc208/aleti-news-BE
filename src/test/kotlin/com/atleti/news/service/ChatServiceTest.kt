@@ -205,19 +205,60 @@ class ChatServiceTest {
     @Test
     @DisplayName("닉네임 사전 선점 REST 서비스 성공 및 중복 차단")
     fun testReserveNicknamePublic() {
-        `when`(hashOps.get("chat:ipnick:1", "127.0.0.1")).thenReturn(null)
-        `when`(hashOps.putIfAbsent("chat:nick:1", "koke", "127.0.0.1")).thenReturn(true)
+        // 브라우저 식별자가 없는 구버전 프론트 — 예전처럼 IP가 주인이 된다
+        `when`(hashOps.putIfAbsent("chat:nick:1", "koke", "ip:127.0.0.1")).thenReturn(true)
 
         val reserved = chatService.reserveNicknamePublic("1", "Koke", "127.0.0.1")
         assertEquals("Koke", reserved)
 
-        // 이미 다른 IP가 선점한 경우
-        `when`(hashOps.get("chat:ipnick:1", "10.0.0.2")).thenReturn(null)
-        `when`(hashOps.putIfAbsent("chat:nick:1", "koke", "10.0.0.2")).thenReturn(false)
-        `when`(hashOps.get("chat:nick:1", "koke")).thenReturn("127.0.0.1")
+        // 이미 다른 사람이 선점한 경우
+        `when`(hashOps.putIfAbsent("chat:nick:1", "koke", "ip:10.0.0.2")).thenReturn(false)
+        `when`(hashOps.get("chat:nick:1", "koke")).thenReturn("ip:127.0.0.1")
 
-        assertFailsWith<ChatException> {
+        val conflict = assertFailsWith<ChatException> {
             chatService.reserveNicknamePublic("1", "Koke", "10.0.0.2")
         }
+        assertEquals(ChatException.NICKNAME_TAKEN, conflict.code)
+    }
+
+    @Test
+    @DisplayName("IP가 바뀌어도 같은 브라우저는 자기 닉네임을 다시 쓴다")
+    fun testNicknameFollowsBrowserNotIp() {
+        // 탭을 닫았다 열거나 모바일에서 재접속하면 공인 IP가 바뀐다.
+        // 주인을 IP로 보던 시절에는 여기서 자기 이름에 자기가 잠겼다.
+        `when`(hashOps.putIfAbsent("chat:nick:1", "koke", "cid:browser-1")).thenReturn(false)
+        `when`(hashOps.get("chat:nick:1", "koke")).thenReturn("cid:browser-1")
+
+        assertEquals(
+            "Koke",
+            chatService.reserveNicknamePublic("1", "Koke", "10.0.0.2", "browser-1")
+        )
+    }
+
+    @Test
+    @DisplayName("같은 IP라도 다른 브라우저는 남의 닉네임을 못 가져간다")
+    fun testNicknameNotStealableOnSharedIp() {
+        // 공유기·카페처럼 IP를 공유하는 곳 — IP가 주인이던 시절엔 그냥 이어받을 수 있었다
+        `when`(hashOps.putIfAbsent("chat:nick:1", "koke", "cid:browser-2")).thenReturn(false)
+        `when`(hashOps.get("chat:nick:1", "koke")).thenReturn("cid:browser-1")
+
+        assertFailsWith<ChatException> {
+            chatService.reserveNicknamePublic("1", "Koke", "127.0.0.1", "browser-2")
+        }
+    }
+
+    @Test
+    @DisplayName("IP만 저장돼 있던 예전 기록은 같은 IP에서 브라우저 식별자로 승계된다")
+    fun testLegacyIpRecordIsClaimedBySameIp() {
+        // 이 수정을 배포하는 순간 채팅 중이던 사람들의 기록은 접두사 없는 IP다.
+        // 승계가 없으면 그 사람들이 24시간 동안 자기 이름에서 잠긴다.
+        `when`(hashOps.putIfAbsent("chat:nick:1", "koke", "cid:browser-1")).thenReturn(false)
+        `when`(hashOps.get("chat:nick:1", "koke")).thenReturn("127.0.0.1")
+
+        assertEquals(
+            "Koke",
+            chatService.reserveNicknamePublic("1", "Koke", "127.0.0.1", "browser-1")
+        )
+        verify(hashOps).put("chat:nick:1", "koke", "cid:browser-1")
     }
 }
