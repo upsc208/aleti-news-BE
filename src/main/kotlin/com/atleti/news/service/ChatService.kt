@@ -3,6 +3,8 @@ package com.atleti.news.service
 import com.atleti.news.config.ChatClient
 import com.atleti.news.config.ClientIp
 import com.atleti.news.dto.ChatMessage
+import com.atleti.news.dto.ChatMessageType
+import com.atleti.news.dto.LiveMatchState
 import com.atleti.news.repository.MatchResultRepository
 import com.atleti.news.repository.UpcomingMatchRepository
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -10,9 +12,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
 import java.time.Duration
-import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneId
 
 /**
  * 채팅 정책 위반 (닫힌 방, 도배, 금지된 내용 등) — 보낸 사람에게만 에러로 전달된다.
@@ -68,6 +68,12 @@ class ChatService(
          */
         const val FREE_ROOM_ID = "free"
 
+        /**
+         * 골 알림을 보내는 봇 이름 (live-match-feed-design 6.7-2).
+         * 유저가 선점하면 가짜 골 알림을 칠 수 있으므로 예약어로 막는다.
+         */
+        const val BOT_NICKNAME = "매치봇"
+
         private const val BANNED_KEY = "chat:banned"
 
         // chat:nick 값의 접두사 — 주인이 브라우저 식별자인지 IP인지 구분한다.
@@ -101,6 +107,36 @@ class ChatService(
             sentAt = OffsetDateTime.now(),
             ipHash = ipHash(ip)
         )
+        store(matchId, message)
+    }
+
+    /**
+     * 라이브 골 알림 발행 (live-match-feed-design 5.1).
+     *
+     * 유저 검증(방 오픈·금칙어·rate limit)을 거치지 않는 유일한 경로라 호출자는
+     * [LiveMatchPoller] 하나뿐이다. 밖에서 들어온 값이 이리로 흘러들지 않도록,
+     * 클라이언트가 보낸 [ChatMessage]의 `type`·`live`는 [send]에서 통째로 버려진다.
+     *
+     * 저장 경로가 유저 메시지와 같으므로 골 알림도 `chat:msg` 목록에 남는다 —
+     * 늦게 들어온 사람의 대화 내역에서 골 라인만 빠져 있으면 오히려 고장으로 보인다.
+     */
+    fun publishLiveMessage(matchId: String, type: ChatMessageType, content: String, live: LiveMatchState?) {
+        store(
+            matchId,
+            ChatMessage(
+                matchId = matchId,
+                nickname = BOT_NICKNAME,
+                content = content,
+                sentAt = OffsetDateTime.now(),
+                ipHash = null,          // 봇은 사람이 아니다 (설계 6.7-4)
+                type = type,
+                live = live
+            )
+        )
+    }
+
+    /** 최근 메시지 목록에 넣고 모든 인스턴스로 방송한다 */
+    private fun store(matchId: String, message: ChatMessage) {
         val json = objectMapper.writeValueAsString(message)
         val key = "chat:msg:$matchId"
 
@@ -116,6 +152,24 @@ class ChatService(
             redis.expire(key, ROOM_TTL)
         }
         redis.convertAndSend(CHANNEL, json)
+    }
+
+    /**
+     * 입장 시 내려줄 라이브 스냅샷 (live-match-feed-design 6.2).
+     *
+     * 폴러가 5초마다 갱신해 둔 것을 **읽기만** 한다. 여기서 네이버를 직접 부르면
+     * 하프타임에 200명이 새로고침하는 순간 그대로 200번 호출이 된다 (설계 5.3).
+     * 자유 채팅방이거나 아직 매핑·폴링 전이면 null.
+     */
+    fun liveState(matchId: String): LiveMatchState? {
+        if (isFreeRoom(matchId)) return null
+        return try {
+            redis.opsForValue().get(LiveMatchKeys.state(matchId))
+                ?.let { objectMapper.readValue(it, LiveMatchState::class.java) }
+        } catch (e: Exception) {
+            println("⚠️ [Live] 스냅샷 조회 실패 (matchId=$matchId): ${e.message}")
+            null
+        }
     }
 
     /**
@@ -166,12 +220,7 @@ class ChatService(
         val dateStr = upcomingMatchRepository.findByMatchId(matchId)?.matchDate
             ?: matchResultRepository.findByMatchId(matchId)?.matchDate
             ?: return null
-        return runCatching { OffsetDateTime.parse(dateStr) }
-            .recoverCatching {
-                Instant.parse(dateStr.replace(" ", "T"))
-                    .atZone(ZoneId.of("Asia/Seoul")).toOffsetDateTime()
-            }
-            .getOrNull()
+        return MatchKickoff.parse(dateStr)
     }
 
     // --- 내용 검증 (6.8) ---
@@ -179,9 +228,22 @@ class ChatService(
     private fun validateNickname(nickname: String): String {
         val clean = nickname.trim()
         if (clean.length !in 2..12) throw ChatException("닉네임은 2~12자로 입력해주세요.")
+        if (isReserved(clean)) {
+            // NICKNAME_TAKEN이어야 프론트가 입력 모달을 다시 연다. REJECTED면 문구만 뜨고
+            // 이름을 바꿀 방법이 없어 채팅이 막힌다
+            throw ChatException("사용할 수 없는 닉네임이에요.", ChatException.NICKNAME_TAKEN)
+        }
         slangFilterService.validateText(clean, "닉네임")
         return clean
     }
+
+    /**
+     * 봇 사칭 차단 (live-match-feed-design 6.7-2).
+     * 공백을 끼워 넣는 우회("매 치 봇")까지 같은 이름으로 본다 — 채팅 화면에서는
+     * 구분이 안 가므로 가짜 골 알림에 그대로 쓰인다.
+     */
+    private fun isReserved(nickname: String): Boolean =
+        nickname.replace(Regex("\\s"), "").lowercase() == BOT_NICKNAME
 
     private fun validateContent(content: String): String {
         val clean = content.trim()

@@ -3,6 +3,7 @@ package com.atleti.news.controller
 import com.atleti.news.config.ChatClient
 import com.atleti.news.config.ClientIp
 import com.atleti.news.dto.ChatMessage
+import com.atleti.news.dto.LiveMatchState
 import com.atleti.news.service.ChatException
 import com.atleti.news.service.ChatService
 import org.springframework.messaging.handler.annotation.DestinationVariable
@@ -16,11 +17,17 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
-/** 방 정보 응답 (docs/redis-design.md 6.3): 오픈 여부 + 접속자 수 + 최근 메시지 */
+/**
+ * 방 정보 응답 (docs/redis-design.md 6.3): 오픈 여부 + 접속자 수 + 최근 메시지.
+ *
+ * [live]는 라이브 스코어보드용 스냅샷 (live-match-feed-design 6.2) — 자유 채팅방이거나
+ * 네이버 경기 매핑 전이면 null이다. 프론트는 `if (room.live)`로 감싸 그리면 된다.
+ */
 data class ChatRoomResponse(
     val open: Boolean,
     val onlineCount: Long,
-    val messages: List<ChatMessage>
+    val messages: List<ChatMessage>,
+    val live: LiveMatchState? = null
 )
 
 data class NicknameRequest(val nickname: String = "")
@@ -71,7 +78,8 @@ class ChatController(
         ChatRoomResponse(
             open = chatService.isOpen(matchId),
             onlineCount = presenceTracker.onlineCount(matchId),
-            messages = chatService.recentMessages(matchId)
+            messages = chatService.recentMessages(matchId),
+            live = chatService.liveState(matchId)
         )
 
     /**

@@ -1,11 +1,16 @@
 package com.atleti.news.service
 
+import com.atleti.news.dto.ChatMessage
+import com.atleti.news.dto.ChatMessageType
+import com.atleti.news.dto.LiveMatchState
+import com.atleti.news.dto.LiveScorer
 import com.atleti.news.repository.MatchResultRepository
 import com.atleti.news.repository.UpcomingMatchRepository
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito.*
 import org.springframework.core.io.DefaultResourceLoader
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver
@@ -14,8 +19,10 @@ import org.springframework.data.redis.core.ListOperations
 import org.springframework.data.redis.core.SetOperations
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
+import java.time.OffsetDateTime
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 class ChatServiceTest {
 
@@ -261,4 +268,116 @@ class ChatServiceTest {
         )
         verify(hashOps).put("chat:nick:1", "koke", "cid:browser-1")
     }
+
+    // ── 라이브 피드 (docs/live-match-feed-design.md) ──────────────────────
+
+    @Test
+    @DisplayName("매치봇은 예약어라 유저가 쓸 수 없다")
+    fun testBotNicknameIsReserved() {
+        // 선점당하면 유저가 가짜 골 알림을 칠 수 있다 (설계 6.7-2)
+        val taken = assertFailsWith<ChatException> {
+            chatService.send("1", ChatService.BOT_NICKNAME, "골!!", "127.0.0.1")
+        }
+        // 프론트가 닉네임 모달을 다시 열어야 하므로 REJECTED가 아니라 NICKNAME_TAKEN이다
+        assertEquals(ChatException.NICKNAME_TAKEN, taken.code)
+
+        // 공백을 끼워 넣는 우회도 같은 이름으로 본다 — 화면에서는 구분이 안 간다
+        assertFailsWith<ChatException> {
+            chatService.send("1", "매 치 봇", "골!!", "127.0.0.1")
+        }
+        assertFailsWith<ChatException> {
+            chatService.reserveNicknamePublic("1", " 매치봇 ", "127.0.0.1")
+        }
+
+        verify(listOps, never()).leftPush(anyString(), anyString())
+    }
+
+    @Test
+    @DisplayName("골 알림은 매치봇 이름으로 저장·발행되고 스코어 스냅샷을 함께 싣는다")
+    fun testPublishLiveMessage() {
+        `when`(listOps.leftPush(anyString(), anyString())).thenReturn(1L)
+
+        chatService.publishLiveMessage("5868012", ChatMessageType.GOAL, "⚽ 43' 호르헤 도밍게스", sampleState())
+
+        val json = ArgumentCaptor.forClass(String::class.java)
+        verify(listOps).leftPush(eq("chat:msg:5868012"), json.capture())
+        verify(redis).convertAndSend(eq("chat.messages"), eq(json.value))
+
+        // 저장 형태 = 브로드캐스트 형태. 늦게 들어온 사람의 대화 내역에도 골 라인이 남는다
+        val message = objectMapper.readValue(json.value, ChatMessage::class.java)
+        assertEquals(ChatMessageType.GOAL, message.type)
+        assertEquals(ChatService.BOT_NICKNAME, message.nickname)
+        assertEquals("⚽ 43' 호르헤 도밍게스", message.content)
+        assertNull(message.ipHash)               // 봇은 사람이 아니다 (설계 6.7-4)
+        assertEquals(1, message.live?.awayScore) // 스코어보드 갱신용 스냅샷 (설계 6장)
+        assertEquals("호르헤 도밍게스", message.live?.scorers?.single()?.name)
+    }
+
+    @Test
+    @DisplayName("유저 메시지는 type이 USER이고 live가 비어 있다")
+    fun testUserMessageStaysPlain() {
+        `when`(valOps.increment(anyString())).thenReturn(1L)
+        `when`(hashOps.get(anyString(), anyString())).thenReturn(null)
+        `when`(hashOps.putIfAbsent(anyString(), anyString(), anyString())).thenReturn(true)
+        `when`(listOps.leftPush(anyString(), anyString())).thenReturn(1L)
+
+        chatService.send("5868012", "코케", "골이다!!", "127.0.0.1")
+
+        val json = ArgumentCaptor.forClass(String::class.java)
+        verify(listOps).leftPush(eq("chat:msg:5868012"), json.capture())
+
+        val message = objectMapper.readValue(json.value, ChatMessage::class.java)
+        assertEquals(ChatMessageType.USER, message.type)
+        assertNull(message.live)
+    }
+
+    @Test
+    @DisplayName("type 필드가 없던 예전 저장분도 그대로 읽힌다")
+    fun testLegacyMessageStillDeserializes() {
+        // Redis List에 이미 쌓여 있는 JSON에는 type·live가 없다. 여기서 깨지면
+        // 이 배포 시점에 열려 있던 방의 대화 내역이 통째로 사라진다
+        val legacy = """{"matchId":"1","nickname":"코케","content":"안녕","sentAt":null,"ipHash":"a3f9"}"""
+        `when`(listOps.range("chat:msg:1", 0, 99)).thenReturn(listOf(legacy))
+
+        val messages = chatService.recentMessages("1")
+        assertEquals(1, messages.size)
+        assertEquals(ChatMessageType.USER, messages.single().type)
+        assertNull(messages.single().live)
+    }
+
+    @Test
+    @DisplayName("입장 시 라이브 스냅샷은 폴러가 써둔 것을 읽기만 한다")
+    fun testLiveStateReadsSnapshot() {
+        `when`(valOps.get("live:state:5868012")).thenReturn(objectMapper.writeValueAsString(sampleState()))
+
+        val live = chatService.liveState("5868012")
+        assertEquals("경기중", live?.status)
+        assertEquals(1, live?.awayScore)
+
+        // 자유 채팅방은 경기가 없으므로 Redis를 건드리지도 않는다
+        assertNull(chatService.liveState(ChatService.FREE_ROOM_ID))
+        verify(valOps, never()).get("live:state:free")
+    }
+
+    @Test
+    @DisplayName("스냅샷이 없거나 깨져 있어도 입장이 막히지 않는다")
+    fun testLiveStateFailsOpen() {
+        // 라이브는 부가 기능이다 — 여기서 예외가 나면 방 정보 API가 통째로 500이 된다 (설계 8.5)
+        `when`(valOps.get("live:state:1")).thenReturn(null)
+        assertNull(chatService.liveState("1"))
+
+        `when`(valOps.get("live:state:2")).thenReturn("{ 깨진 JSON")
+        assertNull(chatService.liveState("2"))
+    }
+
+    private fun sampleState() = LiveMatchState(
+        status = "경기중",
+        homeTeam = "마르세유",
+        awayTeam = "AT 마드리드",
+        homeScore = 0,
+        awayScore = 1,
+        scorers = listOf(LiveScorer("호르헤 도밍게스", 43, 0, isHome = false, ownGoal = false)),
+        kickoff = OffsetDateTime.parse("2026-08-15T00:30:00+09:00"),
+        updatedAt = OffsetDateTime.parse("2026-08-15T01:14:22+09:00")
+    )
 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
@@ -22,10 +23,12 @@ class FotMobScrapeException(message: String, cause: Throwable? = null) : Runtime
 @Service
 class MatchScraperService(
     private val objectMapper: ObjectMapper,
-    private val matchResultRepository: MatchResultRepository
+    private val matchResultRepository: MatchResultRepository,
+    // 기본값은 실제 FotMob. 로컬 리허설에서만 가짜 서버로 돌린다 (scripts/fake-live-match.js)
+    @Value("\${atleti.source.fotmob-base-url}") private val fotmobBaseUrl: String
 ) {
     private val ATLETI_TEAM_ID = "9906"
-    private val FOTMOB_URL = "https://www.fotmob.com/teams/$ATLETI_TEAM_ID/overview/atletico-madrid"
+    private val FOTMOB_URL = "$fotmobBaseUrl/teams/$ATLETI_TEAM_ID/overview/atletico-madrid"
     private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val KST = ZoneId.of("Asia/Seoul")
 
@@ -191,7 +194,7 @@ class MatchScraperService(
     private suspend fun fetchMatchStats(matchId: String): Map<String, String> = withContext(Dispatchers.IO) {
         val statsMap = mutableMapOf<String, String>()
         try {
-            val matchUrl = "https://www.fotmob.com/match/$matchId"
+            val matchUrl = "$fotmobBaseUrl/match/$matchId"
             val doc = Jsoup.connect(matchUrl)
                 .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                 .get()
