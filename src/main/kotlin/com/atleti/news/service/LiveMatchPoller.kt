@@ -78,6 +78,9 @@ class LiveMatchPoller(
     /** 경기별 시계 기준점 (전·후반 실제 시작 시각) */
     private val clockAnchors = ConcurrentHashMap<String, LivePeriods>()
 
+    /** 직전 턴의 경기 상태. 바뀐 순간을 FotMob 재조회 신호로 쓴다 */
+    private val lastStatus = ConcurrentHashMap<String, String>()
+
     /**
      * FotMob에서 한 번만 받아 두면 되는 표기들 — 경기 내내 안 바뀐다.
      * 보드가 로마자로 그려야 해서 필요한데 네이버는 한글만 준다.
@@ -180,7 +183,16 @@ class LiveMatchPoller(
             // 40분 전 골까지 지금 막 들어간 것처럼 한꺼번에 알린다
             seedGoals(matchId, snapshot)
         } else {
-            publishGoalChanges(matchId, snapshot, state)
+            val announced = publishGoalChanges(matchId, snapshot, state)
+            // 골 알림이 나갔으면 거기에 이미 같은 [state]가 실려 있다. 안 나갔을 때만
+            // 따로 알린다 — 하프타임처럼 **골 없이 시계만 바뀌는** 순간이 여기서 걸린다
+            if (!announced && clockChanged(previous, state)) {
+                chatService.publishLiveState(matchId, state)
+                log.info(
+                    "🕒 [Live] 상태 변화 발행 — {} → {} / periods={} (matchId={})",
+                    previous.status, state.status, state.periods, matchId
+                )
+            }
         }
 
         markSettledIfFinished(matchId, snapshot)
@@ -219,10 +231,19 @@ class LiveMatchPoller(
         // 후반 시작 시각까지 받으면 시계가 완성된다. 시작 전에는 물어볼 이유가 없다
         val needsClock = started && !snapshot.finished && periods?.secondHalfStarted == null
 
-        val wait = if (needsNames) LATIN_RETRY else FOTMOB_CLOCK_RETRY
+        val wait = if (needsNames) LATIN_RETRY else clockRetryInterval(periods, Instant.now())
         val nextTry = fotMobRetryAfter[matchId]
 
-        if ((needsNames || needsTeams || needsClock) && (nextTry == null || nextTry.isBefore(Instant.now()))) {
+        // 상태가 방금 바뀌었으면 간격을 무시하고 지금 물어본다.
+        //
+        // **네이버가 FotMob보다 먼저 안다.** 5초마다 보고 있으니 하프타임·후반 시작을
+        // 그 안에 알려주는데, 시계 기준점은 FotMob에만 있다. 간격을 기다리면 정작
+        // 기준점이 필요한 순간을 지나쳐 버린다 — 리허설에서 하프타임이 통째로
+        // 지나간 뒤에야 firstHalfEnded가 도착했다.
+        val statusShifted = lastStatus.put(matchId, snapshot.status) != snapshot.status
+        val due = statusShifted || nextTry == null || nextTry.isBefore(Instant.now())
+
+        if ((needsNames || needsTeams || needsClock) && due) {
             fotMobRetryAfter[matchId] = Instant.now().plus(wait)
             val fotMob = runCatching { fotMobLiveClient.fetchSnapshot(matchId) }
                 .onFailure { log.warn("⚠️ [Live] FotMob 보강 실패 (matchId={}): {}", matchId, it.message) }
@@ -440,12 +461,13 @@ class LiveMatchPoller(
         log.info("ℹ️ [Live] 기존 골 {}건을 기준선으로 잡았습니다 (matchId={})", snapshot.goals.size, matchId)
     }
 
-    private fun publishGoalChanges(matchId: String, snapshot: LiveSnapshot, state: LiveMatchState) {
+    /** 이번 턴에 [state]를 실은 메시지를 하나라도 내보냈으면 true */
+    private fun publishGoalChanges(matchId: String, snapshot: LiveSnapshot, state: LiveMatchState): Boolean {
         val storedSource = readSource(matchId)
         if (storedSource != null && storedSource != snapshot.source) {
-            realignAcrossSources(matchId, snapshot, state, storedSource)
-            return
+            return realignAcrossSources(matchId, snapshot, state, storedSource)
         }
+        var announced = false
 
         val key = LiveMatchKeys.goals(matchId)
         val setOps = redis.opsForSet()
@@ -457,6 +479,7 @@ class LiveMatchPoller(
         for ((goalKey, goal) in current) {
             if (setOps.add(key, goalKey) != 1L) continue
             chatService.publishLiveMessage(matchId, ChatMessageType.GOAL, goalText(goal), state)
+            announced = true
             log.info("⚽ [Live] {} {} (matchId={})", goal.minute, goal.name, matchId)
         }
         redis.expire(key, LiveMatchKeys.LIVE_TTL)
@@ -469,8 +492,10 @@ class LiveMatchPoller(
             if (setOps.remove(key, goalKey) != 1L) continue
             val goal = LiveGoal.fromKey(goalKey) ?: continue
             chatService.publishLiveMessage(matchId, ChatMessageType.GOAL_CANCELLED, cancelText(goal), state)
+            announced = true
             log.info("⚠️ [Live] VAR 취소 {} {} (matchId={})", goal.minute, goal.name, matchId)
         }
+        return announced
     }
 
     /**
@@ -490,7 +515,7 @@ class LiveMatchPoller(
         snapshot: LiveSnapshot,
         state: LiveMatchState,
         from: LiveSource
-    ) {
+    ): Boolean {
         val key = LiveMatchKeys.goals(matchId)
         val setOps = redis.opsForSet()
         val unmatched = (setOps.members(key) ?: emptySet()).mapNotNull { LiveGoal.fromKey(it) }.toMutableList()
@@ -521,6 +546,7 @@ class LiveMatchPoller(
             chatService.publishLiveMessage(matchId, ChatMessageType.GOAL, goalText(goal), state)
             log.info("⚽ [Live] {} {} (소스 전환 중 감지, matchId={})", goal.minute, goal.name, matchId)
         }
+        return fresh.isNotEmpty()
     }
 
     private fun readSource(matchId: String): LiveSource? =
@@ -612,8 +638,60 @@ class LiveMatchPoller(
         /** 라틴 이름을 아직 못 채운 골이 있을 때 다시 물어보는 간격 — 골 알림에 실려야 하니 짧게 */
         private val LATIN_RETRY: Duration = Duration.ofSeconds(20)
 
-        /** 시계 기준점만 기다릴 때의 간격. 후반 시작을 1분 안에 알면 충분하다 */
+        /** 시계 기준점이 당분간 안 바뀌는 구간의 간격 — 전반 한복판 */
         private val FOTMOB_CLOCK_RETRY: Duration = Duration.ofSeconds(60)
+
+        /**
+         * 시계가 곧 바뀌는 구간의 간격. 이 구간에서는 늦게 아는 만큼 화면의 시계가
+         * 그대로 틀린 값을 보여주므로 짧게 잡는다 ([clockRetryInterval]).
+         */
+        private val CLOCK_URGENT_RETRY: Duration = Duration.ofSeconds(15)
+
+        /** 이 시점부터 하프타임을 지켜본다. 전반 추가시간이 아무리 짧아도 45분 전에는 안 끝난다 */
+        private val HALFTIME_WATCH_FROM: Duration = Duration.ofMinutes(43)
+
+        /**
+         * 스코어보드를 다시 그려야 할 만큼 상태가 바뀌었는지.
+         *
+         * 점수는 안 본다 — 점수가 바뀌는 순간은 곧 골이고, 그건 골 알림이 이미 나른다.
+         * 여기서 잡고 싶은 건 **골 없이 바뀌는 것**뿐이다: 경기 시작·하프타임·후반 시작·종료.
+         */
+        internal fun clockChanged(previous: LiveMatchState, state: LiveMatchState): Boolean =
+            previous.status != state.status || !samePeriods(previous.periods, state.periods)
+
+        /**
+         * 두 기준점이 **같은 순간**을 가리키는지.
+         *
+         * `==`로 비교하면 안 된다. [LiveMatchState.periods]의 한쪽은 방금 FotMob에서
+         * 파싱한 값이고 다른 한쪽은 Redis에 넣었다 꺼낸 값인데, Jackson이 역직렬화하면서
+         * 오프셋을 UTC로 옮겨 놓는다. `+02:00`과 `Z`는 같은 순간이어도 `OffsetDateTime.equals`가
+         * 거짓이라, **조용한 5초마다 상태 변화가 일어난 것으로 잡힌다.**
+         */
+        private fun samePeriods(a: LivePeriods?, b: LivePeriods?): Boolean {
+            if (a == null || b == null) return a == b
+            return a.firstHalfStarted?.toInstant() == b.firstHalfStarted?.toInstant() &&
+                a.firstHalfEnded?.toInstant() == b.firstHalfEnded?.toInstant() &&
+                a.secondHalfStarted?.toInstant() == b.secondHalfStarted?.toInstant()
+        }
+
+        /**
+         * FotMob에 시계를 다시 물어볼 간격.
+         *
+         * **화면의 시계가 실제로 틀어져 있는 구간에서만 촘촘히 간다.** 나머지 시간에는
+         * 기준점이 안 바뀌므로 자주 물어도 같은 값만 돌아온다.
+         *
+         * - 기준점이 아직 없다 → 화면은 **예정** 킥오프로 세고 있어 실제 지연만큼 앞서 간다.
+         *   8/15 마르세유전에서 초반 시계가 90~95초 빨랐던 구간이 정확히 여기다
+         * - 하프타임 → 후반이 시작되는 순간을 늦게 알수록 시계가 멈춰 있는 시간이 길어진다
+         * - 전반 [HALFTIME_WATCH_FROM] 이후 → 곧 하프타임이다. 늦게 알면 그만큼 더
+         *   흘러갔다가 되돌아온다
+         */
+        internal fun clockRetryInterval(periods: LivePeriods?, now: Instant): Duration {
+            val firstStart = periods?.firstHalfStarted ?: return CLOCK_URGENT_RETRY
+            if (periods.firstHalfEnded != null) return CLOCK_URGENT_RETRY
+            val elapsed = Duration.between(firstStart.toInstant(), now)
+            return if (elapsed >= HALFTIME_WATCH_FROM) CLOCK_URGENT_RETRY else FOTMOB_CLOCK_RETRY
+        }
 
         /**
          * 두 소스의 골 목록을 팀·분으로 맞춰 `골 키 → 라틴 이름` 표를 만든다.

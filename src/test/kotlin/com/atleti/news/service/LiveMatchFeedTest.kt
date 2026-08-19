@@ -1,7 +1,14 @@
 package com.atleti.news.service
 
+import com.atleti.news.dto.LiveMatchState
+import com.atleti.news.dto.LivePeriods
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.time.OffsetDateTime
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -268,5 +275,163 @@ class LiveMatchFeedTest {
         // 키가 바뀌면 이름이 뒤늦게 채워지는 순간 이미 알린 골을 다시 알린다
         val plain = LiveGoal("훌리안 알바레스", 12, 0, isHome = true, ownGoal = false)
         assertEquals(plain.key, plain.copy(nameLatin = "Julián Álvarez").key)
+    }
+
+    // ── 상태 변화 브로드캐스트 (8/15 실경기에서 드러난 문제) ──────────────
+    //
+    // 8/15 마르세유전에서 하프타임에 화면 시계가 안 멈췄다. 서버는 전반 종료 시각을
+    // 이미 받아 스냅샷에 넣어 뒀는데, 그걸 프론트에 실어 보내는 통로가 **골 알림뿐**이라
+    // 골이 없는 하프타임에는 아무것도 안 나갔다.
+
+    private fun state(
+        status: String = "경기중",
+        periods: LivePeriods? = null,
+        homeScore: Int = 0,
+        awayScore: Int = 0
+    ) = LiveMatchState(
+        status = status,
+        homeTeam = "AT 마드리드",
+        awayTeam = "마르세유",
+        homeScore = homeScore,
+        awayScore = awayScore,
+        scorers = emptyList(),
+        kickoff = OffsetDateTime.parse("2026-08-15T00:30:00+09:00"),
+        periods = periods,
+        updatedAt = OffsetDateTime.parse("2026-08-15T01:20:00+09:00")
+    )
+
+    private fun at(iso: String) = OffsetDateTime.parse(iso)
+
+    @Test
+    @DisplayName("하프타임 진입 — 골이 없어도 상태 변화로 잡힌다")
+    fun testHalftimeIsAClockChange() {
+        val firstHalf = at("2026-08-15T00:31:35+09:00")
+        val playing = state(periods = LivePeriods(firstHalfStarted = firstHalf))
+        val halftime = state(
+            periods = LivePeriods(
+                firstHalfStarted = firstHalf,
+                firstHalfEnded = at("2026-08-15T01:18:20+09:00")
+            )
+        )
+
+        assertTrue(LiveMatchPoller.clockChanged(playing, halftime))
+    }
+
+    @Test
+    @DisplayName("시계 기준점이 처음 잡히는 순간도 상태 변화다")
+    fun testClockAnchorArrivalIsAClockChange() {
+        // 이게 안 잡히면 화면은 예정 킥오프로 계속 센다 — 8/15에 시계가 90초 앞섰던 원인
+        val before = state(periods = null)
+        val anchored = state(periods = LivePeriods(firstHalfStarted = at("2026-08-15T00:31:35+09:00")))
+
+        assertTrue(LiveMatchPoller.clockChanged(before, anchored))
+    }
+
+    @Test
+    @DisplayName("후반 시작과 경기 종료도 각각 잡힌다")
+    fun testSecondHalfAndFinishAreClockChanges() {
+        val periods = LivePeriods(
+            firstHalfStarted = at("2026-08-15T00:31:35+09:00"),
+            firstHalfEnded = at("2026-08-15T01:18:20+09:00")
+        )
+        val halftime = state(periods = periods)
+        val secondHalf = state(periods = periods.copy(secondHalfStarted = at("2026-08-15T01:33:40+09:00")))
+
+        assertTrue(LiveMatchPoller.clockChanged(halftime, secondHalf))
+        assertTrue(LiveMatchPoller.clockChanged(secondHalf, state("경기종료", secondHalf.periods)))
+    }
+
+    @Test
+    @DisplayName("아무것도 안 바뀐 턴에는 발행하지 않는다")
+    fun testQuietTurnPublishesNothing() {
+        // 폴러는 5초마다 도는데 매 턴 브로드캐스트하면 조용한 45분 동안 540번이 나간다
+        val periods = LivePeriods(firstHalfStarted = at("2026-08-15T00:31:35+09:00"))
+        assertFalse(LiveMatchPoller.clockChanged(state(periods = periods), state(periods = periods)))
+    }
+
+    @Test
+    @DisplayName("Redis를 왕복해도 조용한 턴은 조용하다")
+    fun testQuietTurnSurvivesRedisRoundTrip() {
+        // 폴러가 비교하는 「직전 상태」는 Redis에 넣었다 꺼낸 값이다. Jackson이 역직렬화하며
+        // 오프셋을 UTC로 옮기므로 `+09:00`과 `Z`가 다른 값으로 잡힌다 — 그대로 두면
+        // 조용한 45분 내내 5초마다 상태 변화가 발행된다.
+        val mapper = ObjectMapper()
+            .registerKotlinModule()
+            .registerModule(JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+
+        val fresh = state(
+            periods = LivePeriods(
+                firstHalfStarted = at("2026-08-15T00:31:35+09:00"),
+                firstHalfEnded = at("2026-08-15T01:18:20+09:00")
+            )
+        )
+        val fromRedis = mapper.readValue(mapper.writeValueAsString(fresh), LiveMatchState::class.java)
+
+        assertFalse(LiveMatchPoller.clockChanged(fromRedis, fresh))
+    }
+
+    @Test
+    @DisplayName("Redis를 왕복해도 진짜 변화는 잡아낸다")
+    fun testRealChangeSurvivesRedisRoundTrip() {
+        val mapper = ObjectMapper()
+            .registerKotlinModule()
+            .registerModule(JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+
+        val firstHalf = at("2026-08-15T00:31:35+09:00")
+        val playing = state(periods = LivePeriods(firstHalfStarted = firstHalf))
+        val fromRedis = mapper.readValue(mapper.writeValueAsString(playing), LiveMatchState::class.java)
+        val halftime = state(
+            periods = LivePeriods(firstHalfStarted = firstHalf, firstHalfEnded = at("2026-08-15T01:18:20+09:00"))
+        )
+
+        assertTrue(LiveMatchPoller.clockChanged(fromRedis, halftime))
+    }
+
+    @Test
+    @DisplayName("점수 변화만으로는 발행하지 않는다 — 골 알림이 이미 나른다")
+    fun testScoreChangeAloneIsNotAClockChange() {
+        val periods = LivePeriods(firstHalfStarted = at("2026-08-15T00:31:35+09:00"))
+        val before = state(periods = periods, homeScore = 0)
+        val after = state(periods = periods, homeScore = 1)
+
+        assertFalse(LiveMatchPoller.clockChanged(before, after))
+    }
+
+    // ── 시계 조회 간격 ────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("기준점이 없으면 촘촘히 물어본다")
+    fun testClockRetryIsUrgentWithoutAnchor() {
+        val now = at("2026-08-15T00:31:00+09:00").toInstant()
+        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(null, now))
+    }
+
+    @Test
+    @DisplayName("전반 한복판에는 느슨하게 물어본다")
+    fun testClockRetryIsRelaxedMidFirstHalf() {
+        val periods = LivePeriods(firstHalfStarted = at("2026-08-15T00:31:35+09:00"))
+        val now = at("2026-08-15T01:00:00+09:00").toInstant()   // 28분 경과
+        assertEquals(Duration.ofSeconds(60), LiveMatchPoller.clockRetryInterval(periods, now))
+    }
+
+    @Test
+    @DisplayName("전반 43분부터는 하프타임을 지켜본다")
+    fun testClockRetryTightensBeforeHalftime() {
+        val periods = LivePeriods(firstHalfStarted = at("2026-08-15T00:31:35+09:00"))
+        val now = at("2026-08-15T01:15:00+09:00").toInstant()   // 43분 경과
+        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(periods, now))
+    }
+
+    @Test
+    @DisplayName("하프타임 동안에는 후반 시작을 촘촘히 기다린다")
+    fun testClockRetryIsUrgentDuringHalftime() {
+        val periods = LivePeriods(
+            firstHalfStarted = at("2026-08-15T00:31:35+09:00"),
+            firstHalfEnded = at("2026-08-15T01:18:20+09:00")
+        )
+        val now = at("2026-08-15T01:25:00+09:00").toInstant()
+        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(periods, now))
     }
 }

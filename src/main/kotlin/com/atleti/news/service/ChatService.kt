@@ -135,6 +135,30 @@ class ChatService(
         )
     }
 
+    /**
+     * 골 없이 경기 상태만 바뀐 순간을 알린다 — 킥오프·하프타임·후반 시작·경기 종료.
+     *
+     * [publishLiveMessage]와 달리 **`chat:msg` 목록에 저장하지 않는다.** 이건 대화가
+     * 아니라 스코어보드 갱신이라, 남겨두면 늦게 들어온 사람의 대화 내역이 빈 줄로 채워진다.
+     * 프론트는 `type != USER`인 메시지를 채팅 라인으로 그리지 않고 `live`만 꺼내 쓰므로
+     * (useChatRoom.ts의 isHumanMessage) 화면에는 스코어보드와 시계만 조용히 바뀐다.
+     *
+     * 저장하지 않는 대가로 **놓치면 끝이다.** 그래도 괜찮은 이유는 다음 상태 변화나
+     * 골에서 다시 실려 나가고, 입장 시 [liveState]가 어차피 최신 스냅샷을 주기 때문이다.
+     */
+    fun publishLiveState(matchId: String, live: LiveMatchState) {
+        val message = ChatMessage(
+            matchId = matchId,
+            nickname = BOT_NICKNAME,
+            content = "",           // 채팅 라인으로 그려지지 않는다 — 나르는 건 live 하나뿐
+            sentAt = OffsetDateTime.now(),
+            ipHash = null,
+            type = ChatMessageType.STATUS,
+            live = live
+        )
+        redis.convertAndSend(CHANNEL, objectMapper.writeValueAsString(message))
+    }
+
     /** 최근 메시지 목록에 넣고 모든 인스턴스로 방송한다 */
     private fun store(matchId: String, message: ChatMessage) {
         val json = objectMapper.writeValueAsString(message)
