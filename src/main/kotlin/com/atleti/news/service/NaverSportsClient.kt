@@ -61,7 +61,9 @@ data class NaverGame(
         awayScore = awayScore,
         competition = categoryName,
         goals = scorers,
-        finished = NaverSportsClient.isFinished(this)
+        finished = NaverSportsClient.isFinished(this),
+        halftime = NaverSportsClient.isHalftime(this),
+        statusCode = statusCode
     )
 }
 
@@ -232,15 +234,47 @@ class NaverSportsClient(
         private val KST = ZoneId.of("Asia/Seoul")
 
         private val FINISHED_CODES = setOf("RESULT", "FINAL", "END", "CANCEL", "CANCELED", "POSTPONE", "POSTPONED")
-        private val FINISHED_LABELS = listOf("종료", "취소", "연기", "몰수")
 
         /**
-         * 폴링을 멈춰도 되는 상태인지. 라이브 중의 실제 `statusCode` 값은 아직 실측 전이라
-         * (설계 9.2) 코드와 한글 표기를 함께 보고 넉넉히 잡는다.
-         * 늦게 멈추는 쪽이 알림을 놓치지 않는다.
+         * 끝났다고 볼 한글 표기. **부분 일치로 보면 안 된다.**
+         *
+         * 2026-08-20 말라가전에서 네이버의 하프타임 표기가 `전반종료`였는데,
+         * `contains("종료")`가 이걸 경기 종료로 읽었다. 폴러는 전반이 끝나자마자 이 경기를
+         * 끝난 것으로 표시하고 폴링을 멈췄고, **후반 골이 통째로 안 나갔다.**
+         * 하프타임·후반 시계가 죽은 것도 같은 이유다 (docs/round1.md).
+         *
+         * 그래서 공백만 지우고 **정확히 일치할 때만** 끝난 것으로 본다. 모르는 표기가
+         * 들어오면 안 끝난 것으로 보는데, 그래도 폴러는 킥오프 +3시간에 어차피 멈추므로
+         * 늦게 멈추는 쪽이 안전하다 — 일찍 멈추면 이번처럼 경기가 통째로 날아간다.
          */
-        internal fun isFinished(game: NaverGame): Boolean =
-            game.statusCode.uppercase() in FINISHED_CODES ||
-                FINISHED_LABELS.any { game.statusInfo.contains(it) }
+        private val FINISHED_LABELS = setOf("경기종료", "종료", "경기취소", "취소", "연기", "몰수")
+
+        /** 하프타임 표기 (2026-08-20 실측: `전반종료`) */
+        private val HALFTIME_LABELS = setOf("전반종료", "하프타임", "휴식")
+
+        private fun normalize(statusInfo: String) = statusInfo.replace(" ", "").trim()
+
+        /**
+         * 폴링을 멈춰도 되는 상태인지.
+         *
+         * **하프타임이면 무조건 아니다.** statusCode보다 이걸 먼저 본다 — 8/20 경기에서
+         * 하프타임의 실제 `statusCode`가 무엇이었는지 기록이 없어서, 그게 종료 코드였을
+         * 가능성을 아직 못 지웠다. 표기가 `전반종료`인데 코드 때문에 또 멈추면 같은 사고가 난다.
+         */
+        internal fun isFinished(game: NaverGame): Boolean {
+            if (normalize(game.statusInfo) in HALFTIME_LABELS) return false
+            return game.statusCode.uppercase() in FINISHED_CODES ||
+                normalize(game.statusInfo) in FINISHED_LABELS
+        }
+
+        /**
+         * 하프타임인지. **네이버가 FotMob보다 먼저, 그리고 확실하게 알려준다.**
+         *
+         * 8/20 경기에서 FotMob의 `halfs.firstHalfEnded`는 전반 종료 15분이 지나도록
+         * 끝내 안 왔다(CDN 캐시로 추정 — 설계 8.6). 그동안 화면 시계는 계속 돌았다.
+         * 그래서 시계 기준점을 FotMob에만 의존하지 않고 이 신호로도 만든다.
+         */
+        internal fun isHalftime(game: NaverGame): Boolean =
+            normalize(game.statusInfo) in HALFTIME_LABELS
     }
 }

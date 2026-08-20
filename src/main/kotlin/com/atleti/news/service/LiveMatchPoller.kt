@@ -54,7 +54,8 @@ class LiveMatchPoller(
     private val liveMatchMapper: LiveMatchMapper,
     private val chatService: ChatService,
     private val upcomingMatchRepository: UpcomingMatchRepository,
-    @Value("\${atleti.live.enabled}") private val enabled: Boolean
+    @Value("\${atleti.live.enabled}") private val enabled: Boolean,
+    @Value("\${atleti.live.delay-seconds:30}") private val delaySeconds: Long
 ) {
     private val log = LoggerFactory.getLogger(LiveMatchPoller::class.java)
 
@@ -91,6 +92,15 @@ class LiveMatchPoller(
 
     /** FotMob 보강(이름·시계)을 다시 시도할 시각 */
     private val fotMobRetryAfter = ConcurrentHashMap<String, Instant>()
+
+    /**
+     * 아직 내보내지 않은 스냅샷 — `{가져온 시각, 스냅샷}`.
+     *
+     * 라이브 정보를 **중계보다 늦게** 내보내기 위한 대기열이다 ([takeDue] 참고).
+     * 인스턴스 안에만 둔다. 재시작하면 비므로 [delaySeconds]만큼 발행이 쉬는데,
+     * 스냅샷은 매번 전체 상태라 다시 차오르면 그대로 이어진다.
+     */
+    private val feedBuffer = ConcurrentHashMap<String, ArrayDeque<Pair<Instant, LiveSnapshot>>>()
 
     /** 예정 경기 목록 캐시 — 경기가 없는 대부분의 시간에 5초마다 DB를 두드리지 않기 위한 것 */
     @Volatile private var activeCache: List<ActiveMatch> = emptyList()
@@ -172,8 +182,14 @@ class LiveMatchPoller(
         val fetched = fetchSnapshot(match, previous) ?: return
 
         // 알림을 내보내기 **전에** 라틴 이름을 채운다 — 골 메시지에도 같이 실려야
-        // LED가 첫 연출부터 로마자로 그린다
-        val snapshot = withLatinNames(matchId, fetched, started = !OffsetDateTime.now().isBefore(match.kickoff))
+        // LED가 첫 연출부터 로마자로 그린다.
+        //
+        // **이 단계까지는 실시간으로 한다.** 라틴 이름·시계 기준점은 지금 받아 둬야 하고,
+        // 특히 하프타임 기준점은 그 순간의 시각으로 찍혀야 정확하다. 늦추는 것은 그 다음이다
+        val enriched = withLatinNames(matchId, fetched, started = !OffsetDateTime.now().isBefore(match.kickoff))
+
+        // 중계보다 늦게 내보낸다 — 아직 충분히 묵지 않았으면 이번 턴은 조용히 넘어간다
+        val snapshot = takeDue(matchId, enriched) ?: return
 
         val state = toState(snapshot, previous, match.kickoff, latinLabels[matchId])
         writeState(matchId, state)
@@ -188,9 +204,11 @@ class LiveMatchPoller(
             // 따로 알린다 — 하프타임처럼 **골 없이 시계만 바뀌는** 순간이 여기서 걸린다
             if (!announced && clockChanged(previous, state)) {
                 chatService.publishLiveState(matchId, state)
+                // statusCode를 같이 남긴다 — 8/20 경기에서 하프타임의 실제 코드를 몰라
+                // 종료 판정을 방어적으로 짤 수밖에 없었다 (NaverSportsClient.isFinished)
                 log.info(
-                    "🕒 [Live] 상태 변화 발행 — {} → {} / periods={} (matchId={})",
-                    previous.status, state.status, state.periods, matchId
+                    "🕒 [Live] 상태 변화 발행 — {} → {} [code={}] / periods={} (matchId={})",
+                    previous.status, state.status, snapshot.statusCode, state.periods, matchId
                 )
             }
         }
@@ -266,8 +284,49 @@ class LiveMatchPoller(
 
         return snapshot.copy(
             goals = snapshot.goals.map { it.copy(nameLatin = known[it.key]) },
-            periods = clockAnchors[matchId]
+            periods = fillClockFromStatus(matchId, snapshot)
         )
+    }
+
+    /**
+     * FotMob이 안 준 시계 기준점을 **네이버 상태로 메꾼다.**
+     *
+     * 2026-08-20 말라가전에서 FotMob의 `halfs.firstHalfEnded`가 전반 종료 15분이 지나도록
+     * 끝내 안 왔다. 그동안 화면 시계는 멈추지 않고 계속 돌았고, 후반이 시작돼도 45:00으로
+     * 되돌아가지 않았다. FotMob 하나에만 매달린 것이 원인이다.
+     *
+     * 네이버는 같은 순간을 `전반종료`로 5초 안에 알려준다. 정확한 시각은 아니지만
+     * **폴링 주기(5초) 안쪽의 오차**이고, 시계가 아예 안 멈추는 것보다 훨씬 낫다.
+     *
+     * FotMob 값이 나중에라도 오면 그쪽이 이긴다 — 여기서는 비어 있을 때만 채운다.
+     */
+    private fun fillClockFromStatus(matchId: String, snapshot: LiveSnapshot): LivePeriods? {
+        val anchor = clockAnchors[matchId] ?: return null
+        // 전반 시작조차 모르면 메꿀 기준이 없다. 엉뚱한 시각을 지어내지 않는다
+        if (anchor.firstHalfStarted == null) return anchor
+
+        val now = OffsetDateTime.now()
+
+        if (snapshot.halftime && anchor.firstHalfEnded == null) {
+            val filled = anchor.copy(firstHalfEnded = now)
+            clockAnchors[matchId] = filled
+            log.info("ℹ️ [Live] 전반 종료를 네이버 상태로 잡았습니다 ({}) — FotMob 미제공 (matchId={})",
+                snapshot.status, matchId)
+            return filled
+        }
+
+        // 하프타임이 끝나고 다시 경기중으로 돌아온 순간 = 후반 시작.
+        // 이게 있어야 화면이 45:00부터 다시 센다
+        if (!snapshot.halftime && !snapshot.finished &&
+            anchor.firstHalfEnded != null && anchor.secondHalfStarted == null
+        ) {
+            val filled = anchor.copy(secondHalfStarted = now)
+            clockAnchors[matchId] = filled
+            log.info("ℹ️ [Live] 후반 시작을 네이버 상태로 잡았습니다 — FotMob 미제공 (matchId={})", matchId)
+            return filled
+        }
+
+        return anchor
     }
 
 
@@ -402,6 +461,40 @@ class LiveMatchPoller(
         redis.opsForValue().setIfAbsent(
             LiveMatchKeys.end(matchId), Instant.now().toEpochMilli().toString(), LiveMatchKeys.LIVE_TTL
         )
+        feedBuffer.remove(matchId)
+    }
+
+    /**
+     * 방금 가져온 스냅샷을 대기열에 넣고, **[delaySeconds]만큼 묵은 것**을 꺼내 준다.
+     * 아직 그만큼 묵은 게 없으면 null — 이번 턴은 아무것도 내보내지 않는다.
+     *
+     * ## 왜 늦추나
+     *
+     * 봇이 중계보다 빠르면 실시간 정보가 아니라 **스포일러**다. 2026-08-20 라리가
+     * 말라가전에서 쿠팡플레이가 실제보다 27~33초 늦었는데, 골 알림은 실제 골로부터
+     * 2~20초면 나갔다. 시청자가 골 장면을 보기 **7~31초 전에** 채팅이 먼저 알려준 셈이다.
+     *
+     * 시계만 밀면 스코어보드 숫자가 먼저 올라가 똑같이 새어 나간다. 그래서 스코어·득점자·
+     * 골 알림·하프타임까지 **전부 같은 폭으로** 늦춘다 — 화면이 한 몸으로 움직인다.
+     *
+     * ## 왜 이 방식인가
+     *
+     * 발행만 따로 보류하지 않고 **입력을 늦춘다.** 스냅샷은 매번 전체 상태라, 늦게 들어온
+     * 스냅샷에 기존 diff 로직을 그대로 태우면 골·취소·상태 변화가 저절로 같이 밀린다.
+     * 보류 큐를 따로 두면 취소가 골을 앞지르는 순서 문제를 직접 풀어야 한다.
+     *
+     * 덤으로 **넣자마자 VAR로 취소된 골은 아예 안 나간다.** 두 변화가 같은 대기 구간
+     * 안에서 상쇄되기 때문인데, 시청자가 보지도 못한 골을 알렸다 취소하는 것보다 낫다.
+     */
+    private fun takeDue(matchId: String, fresh: LiveSnapshot): LiveSnapshot? {
+        if (delaySeconds == 0L) return fresh
+
+        val queue = feedBuffer.getOrPut(matchId) { ArrayDeque() }
+        synchronized(queue) {
+            queue.addLast(Instant.now() to fresh)
+
+            return drainDue(queue, Instant.now().minusSeconds(delaySeconds))
+        }
     }
 
     // ── ③ 스냅샷 ─────────────────────────────────────────────────────────
@@ -429,9 +522,11 @@ class LiveMatchPoller(
             LiveScorer(it.name, it.time, it.addedTime, it.isHome, it.ownGoal, it.nameLatin)
         },
         kickoff = kickoff,
-        periods = snapshot.periods,
+        periods = delayed(snapshot.periods, delaySeconds),
         updatedAt = OffsetDateTime.now()
     )
+
+
 
     private fun preferKorean(source: LiveSource, previous: String?, current: String): String =
         if (source == LiveSource.FOTMOB && !previous.isNullOrBlank()) previous else current
@@ -649,6 +744,46 @@ class LiveMatchPoller(
 
         /** 이 시점부터 하프타임을 지켜본다. 전반 추가시간이 아무리 짧아도 45분 전에는 안 끝난다 */
         private val HALFTIME_WATCH_FROM: Duration = Duration.ofMinutes(43)
+
+        /**
+         * 대기열에서 [cutoff]보다 오래된 것을 모두 꺼내고 **그중 가장 최신**을 돌려준다.
+         *
+         * 중간 것을 버려도 되는 이유: 스냅샷은 매번 **전체 상태**라 건너뛴 변화도 다음
+         * 비교에서 그대로 잡힌다. 누적이 아니므로 놓치는 골이 없다.
+         */
+        internal fun drainDue(
+            queue: ArrayDeque<Pair<Instant, LiveSnapshot>>,
+            cutoff: Instant
+        ): LiveSnapshot? {
+            var due: LiveSnapshot? = null
+            while (queue.isNotEmpty() && !queue.first().first.isAfter(cutoff)) {
+                due = queue.removeFirst().second
+            }
+            return due
+        }
+
+        /**
+         * 화면 시계를 [seconds]만큼 뒤로 민다.
+         *
+         * **봇이 중계보다 빠르면 실시간 정보가 아니라 스포일러다.** 2026-08-20 라리가
+         * 말라가전에서 우리 시계가 쿠팡플레이보다 27~33초 빨랐다(8/15 프렌들리에서는 5초였다 —
+         * 라리가는 스페인 제작 → 국제 전송 → 한국 재인코딩이라 중계 경로가 길다. 설계 4.3).
+         *
+         * 기준점을 통째로 미는 것이라 **전·후반·하프타임이 한꺼번에, 어긋남 없이** 밀린다.
+         * 하프타임에 멈추는 값(`firstHalfEnded - firstHalfStarted`)은 차이라서 그대로다.
+         *
+         * 내부 판단(폴링 간격·하프타임 감시)에는 쓰지 않는다 — 밖으로 나가는 값에만 적용한다.
+         * 그쪽까지 밀면 실제 경기 진행보다 30초 늦게 반응하게 된다.
+         */
+        internal fun delayed(periods: LivePeriods?, seconds: Long): LivePeriods? {
+            if (periods == null || seconds == 0L) return periods
+            fun push(t: OffsetDateTime?) = t?.plusSeconds(seconds)
+            return LivePeriods(
+                firstHalfStarted = push(periods.firstHalfStarted),
+                firstHalfEnded = push(periods.firstHalfEnded),
+                secondHalfStarted = push(periods.secondHalfStarted)
+            )
+        }
 
         /**
          * 스코어보드를 다시 그려야 할 만큼 상태가 바뀌었는지.

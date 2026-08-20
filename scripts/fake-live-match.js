@@ -30,6 +30,9 @@
  *   malaga-half    같은 경기의 전반만 5분에 압축, 골 7건 + 취소 1건.
  *                  골 연출을 여러 번 보고 하프타임 정지를 확인하는 용도
  *
+ * --nohalfs        FotMob이 halfs를 안 주는 상황 (8/20 실경기에서 실제로 그랬다).
+ *                  네이버 `전반종료`만으로 시계가 멈추는지 확인한다
+ *
  * 진행 중 키 입력:
  *   k  네이버를 죽인다 (503)  → FotMob 폴백으로 넘어가는지 본다
  *   r  네이버를 살린다        → 되돌아오는지 본다
@@ -59,7 +62,16 @@ const opt = (name, fallback) => {
 const PORT = Number(opt('port', '8099'));
 const APP = opt('app', 'http://localhost:8080');
 const SPEED = Math.max(0.1, Number(opt('speed', '1')));
-const KICKOFF_DELAY_SEC = Number(opt('kickoff', '15'));
+const KICKOFF_DELAY_SEC = Number(opt('kickoff', '10'));
+
+/**
+ * FotMob이 `halfs`를 안 주는 상황을 흉내낸다 (`--nohalfs`).
+ *
+ * 2026-08-20 말라가전에서 실제로 그랬다 — `firstHalfEnded`가 하프타임 15분이 지나도록
+ * 끝내 안 왔고, 그동안 화면 시계가 멈추지 않았다. FotMob CDN 캐시로 추정한다(설계 8.6).
+ * 이 옵션을 켜면 서버가 네이버 `전반종료`만으로 시계를 멈출 수 있는지 확인할 수 있다.
+ */
+const NO_HALFS = process.argv.includes('--nohalfs');
 
 /** 채팅방 키 = FotMob matchId. 실제 경기와 겹치지 않게 가짜 번호를 쓴다 */
 const MATCH_ID = '9999999';
@@ -169,9 +181,13 @@ const STRESS_SCRIPT = [
   goal('g10', 185, '전반 추가시간 알바레스 멀티골', true, P.alvarez),
 
   // ── 하프타임 → 후반 ──
-  // 여기서 LED 시계가 45:00으로 점프해야 한다. FotMob halfs 기준점이 도착했다는 증거다.
-  // (네이버의 실제 하프타임 표기는 아직 확인 전이라 그럴듯한 값을 넣어 둔다)
-  { t: 195, kind: 'status', code: 'HALFTIME', info: '하프타임', desc: '전반 종료' },
+  // 여기서 LED 시계가 45:00으로 점프해야 한다.
+  //
+  // `전반종료`는 **네이버가 실제로 쓰는 표기다** (2026-08-20 말라가전 실측).
+  // 예전에는 여기에 지어낸 `하프타임`을 넣어 뒀는데, 그 바람에 리허설이
+  // `"전반종료".contains("종료")` 오판정을 통과시켰다 — 실경기에서 폴러가 전반 끝나자마자
+  // 멈춰 후반 골이 통째로 안 나갔다 (docs/round1.md). 지어낸 값으로 검증한 대가다.
+  { t: 195, kind: 'status', code: 'HALFTIME', info: '전반종료', desc: '전반 종료' },
   { t: 210, kind: 'status', code: 'STARTED', info: '경기중', desc: '후반 시작 (시계가 45:00으로 점프해야 한다)' },
 
   // ── 45분: 3골 ──
@@ -204,36 +220,56 @@ const STRESS_SCRIPT = [
 // 이 대본으로만 확인되는 것이 하나 있다: ㉡의 **"전반 43분 이후 촘촘히"** 조건이다
 // (docs/live-match-8-15-postmortem.md). 5분짜리 스트레스 대본에서는 벽시계로 43분이
 // 오지 않아 그 분기가 아예 안 돌았다.
+/**
+ * 26/27 시즌 실제 명단 (2026-08-19 FotMob 조회).
+ *
+ * 한글 표기는 네이버가 쓸 법한 음역이다. 이 스크립트가 네이버 대역이므로 여기 적은 것이
+ * 곧 "네이버가 주는 이름"이 되고, 라틴 표기는 FotMob 대역이 준다. **둘을 일부러 다르게
+ * 둔 것이 핵심이다** — 서버는 이름으로 짝을 짓지 않고 팀·분으로 맞추기 때문이다.
+ *
+ * `leeKangIn`이 그 시험대다. `이강인` ↔ `Kang-In Lee`는 글자가 하나도 안 겹치는데,
+ * 짝짓기가 이름을 안 보므로 그대로 붙어야 정상이다. 프론트에서는 성만 떼어 `LEE`가 된다.
+ */
 const MALAGA_P = {
-  // 아틀레티
+  // ── 아틀레티 ──
   alvarez: { ko: '훌리안 알바레스', en: 'Julián Álvarez' },
-  griezmann: { ko: '앙투안 그리즈만', en: 'Antoine Griezmann' },
   sorloth: { ko: '알렉산더 쇠를로트', en: 'Alexander Sørloth' },
-  // 말라가 — **가상 이름이다.** 내일 실제 명단을 모르는데, 이 대본이 확인하려는 것은
-  // 이름의 정확도가 아니라 화면 동작이다. 라틴 표기가 붙는지만 보면 된다
-  rubio: { ko: '다비드 루비오', en: 'David Rubio' },
-  larrea: { ko: '이케르 라레아', en: 'Iker Larrea' },
+  baena: { ko: '알렉스 바에나', en: 'Álex Baena' },
+  lookman: { ko: '아데몰라 루크만', en: 'Ademola Lookman' },
+  leeKangIn: { ko: '이강인', en: 'Kang-In Lee' },
+  gSimeone: { ko: '줄리아노 시메오네', en: 'Giuliano Simeone' },
+  koke: { ko: '코케', en: 'Koke' },
+  llorente: { ko: '마르코스 요렌테', en: 'Marcos Llorente' },
+  normand: { ko: '로빈 르 노르망', en: 'Robin Le Normand' },
+
+  // ── 말라가 ──
+  larrubia: { ko: '다비드 라루비아', en: 'David Larrubia' },
+  chupe: { ko: '추페', en: 'Chupe' },
+  nino: { ko: '아드리안 니노', en: 'Adrián Nino' },
+  jauregi: { ko: '에네코 하우레기', en: 'Eneko Jauregi' },
+  lorenzo: { ko: '다니 로렌소', en: 'Dani Lorenzo' },
 };
 
 const MALAGA_SCRIPT = [
   { t: 0, kind: 'status', code: 'STARTED', info: '경기중', desc: '킥오프' },
 
   goal('m1', 14 * 60, "14' 알바레스 선제골", true, MALAGA_P.alvarez),
-  goal('m2', 31 * 60, "31' 루비오 동점골", false, MALAGA_P.rubio),
+  goal('m2', 31 * 60, "31' 라루비아 동점골", false, MALAGA_P.larrubia),
 
   // 전반 45분 + 추가시간 1분 → 화면에 `45+1′`로 찍혀야 한다
-  { t: 46 * 60, kind: 'status', code: 'HALFTIME', info: '하프타임', desc: '전반 종료 (시계가 멈춰야 한다)' },
+  { t: 46 * 60, kind: 'status', code: 'HALFTIME', info: '전반종료', desc: '전반 종료 (시계가 멈춰야 한다)' },
 
   // 휴식 15분. 후반 시계는 45:00부터 다시 센다
   { t: 61 * 60, kind: 'status', code: 'STARTED', info: '경기중', desc: '후반 시작 (시계가 45:00으로 점프)' },
 
-  goal('m3', 61 * 60 + 18 * 60, "63' 그리즈만 역전골", true, MALAGA_P.griezmann),
+  goal('m3', 61 * 60 + 18 * 60, "63' 쇠를로트 역전골", true, MALAGA_P.sorloth),
 
   // 취소 한 건 — 실제 경기에 흔한 빈도다. 스트레스 대본처럼 몰아치지 않는다
-  goal('m4', 61 * 60 + 26 * 60, "71' 쇠를로트 추가골 (곧 취소된다)", true, MALAGA_P.sorloth),
-  { t: 61 * 60 + 28 * 60, kind: 'cancel', id: 'm4', desc: "VAR — 71' 쇠를로트 골 취소 (오프사이드)" },
+  goal('m4', 61 * 60 + 26 * 60, "71' 바에나 추가골 (곧 취소된다)", true, MALAGA_P.baena),
+  { t: 61 * 60 + 28 * 60, kind: 'cancel', id: 'm4', desc: "VAR — 71' 바에나 골 취소 (오프사이드)" },
 
-  goal('m5', 61 * 60 + 43 * 60, "88' 쇠를로트 쐐기골", true, MALAGA_P.sorloth),
+  // 이강인 ↔ Kang-In Lee — 두 소스의 이름이 하나도 안 겹친다. 보드에 LEE가 떠야 정상
+  goal('m5', 61 * 60 + 43 * 60, "88' 이강인 쐐기골", true, MALAGA_P.leeKangIn),
 
   // 후반 추가시간 4분 → `90+4′`
   { t: 61 * 60 + 49 * 60, kind: 'status', code: 'RESULT', info: '경기종료', desc: '경기 종료 (3-1)' },
@@ -249,21 +285,24 @@ const MALAGA_SCRIPT = [
 const MALAGA_HALF_SCRIPT = [
   { t: 0, kind: 'status', code: 'STARTED', info: '경기중', desc: '킥오프' },
 
+  // 득점자를 매번 다르게 둔다 — 라틴 표기가 선수마다 제대로 붙는지 보려는 것이다
   goal('h1', 20, '알바레스 선제골', true, MALAGA_P.alvarez),
-  goal('h2', 45, '루비오 동점골', false, MALAGA_P.rubio),
-  goal('h3', 75, '그리즈만 역전골', true, MALAGA_P.griezmann),
-  goal('h4', 105, '라레아 동점골', false, MALAGA_P.larrea),
+  goal('h2', 45, '라루비아 동점골', false, MALAGA_P.larrubia),
+  goal('h3', 75, '바에나 역전골', true, MALAGA_P.baena),
+
+  // 자책골 — 넣은 선수는 아틀레티인데 점수는 말라가에 붙어야 한다
+  goal('h4', 105, '르 노르망 자책골 (홈 선수 → 원정 득점)', true, MALAGA_P.normand, { ownGoal: true }),
 
   // 3초 간격 버스트 — 한 턴(5초)에 두 골이 같이 잡히는지
-  goal('h5', 140, '쇠를로트 재역전골', true, MALAGA_P.sorloth),
-  goal('h6', 143, '루비오 즉답 (3초 뒤)', false, MALAGA_P.rubio),
+  goal('h5', 140, '이강인 재역전골 (이강인 ↔ Kang-In Lee 짝짓기)', true, MALAGA_P.leeKangIn),
+  goal('h6', 143, '추페 즉답 (3초 뒤)', false, MALAGA_P.chupe),
 
-  { t: 170, kind: 'cancel', id: 'h3', desc: 'VAR — 그리즈만 골 취소 (목록 가운데가 사라진다)' },
+  { t: 170, kind: 'cancel', id: 'h3', desc: 'VAR — 바에나 골 취소 (목록 가운데가 사라진다)' },
 
-  goal('h7', 200, '알바레스 멀티골', true, MALAGA_P.alvarez),
+  goal('h7', 200, '루크만 동점골', true, MALAGA_P.lookman),
 
   // 여기서 시계가 멈춰야 한다 (8/15에 안 멈췄던 것)
-  { t: 260, kind: 'status', code: 'HALFTIME', info: '하프타임', desc: '전반 종료 — 시계가 멈춰야 한다' },
+  { t: 260, kind: 'status', code: 'HALFTIME', info: '전반종료', desc: '전반 종료 — 시계가 멈춰야 한다' },
 ];
 
 const SCENARIOS = {
@@ -277,18 +316,18 @@ const SCENARIOS = {
   malaga: {
     desc: '8/20 04:00 라리가 AT 마드리드 vs 말라가 예행연습 — 골 4건, 실제 페이스(110분)',
     home: { ko: 'AT 마드리드', en: 'Atletico Madrid' },
-    // 네이버는 `말라가`, FotMob은 `Málaga`로 준다. 보드 약칭 표에 없는 팀이라
-    // **라틴 이름 앞 세 글자(MAL)로 떨어지는 것이 정상**이다 (설계 11.3).
-    // 악센트가 든 이름이 조회 키에서 어떻게 처리되는지도 여기서 같이 보인다
-    away: { ko: '말라가', en: 'Málaga' },
-    awayFotmobId: 8302,   // 실제 값 미확인 — 아틀레티(9906)와 다르기만 하면 동작한다
+    // 네이버는 `말라가`, FotMob은 `Malaga`로 준다(악센트 없음 — 2026-08-19 실측).
+    // 보드 약칭 표에 없는 팀이라 **라틴 이름 앞 세 글자(MAL)로 떨어지는 것이 정상**이다
+    // (설계 11.3)
+    away: { ko: '말라가', en: 'Malaga' },
+    awayFotmobId: 9864,   // FotMob 실측 (2026-08-19). 내일 경기의 FotMob 매치 ID는 5868012다
     script: MALAGA_SCRIPT,
   },
   'malaga-half': {
     desc: '말라가전 전반만 — 골 7건 + VAR 취소 1건을 5분에 압축, 하프타임에서 끝',
     home: { ko: 'AT 마드리드', en: 'Atletico Madrid' },
-    away: { ko: '말라가', en: 'Málaga' },
-    awayFotmobId: 8302,
+    away: { ko: '말라가', en: 'Malaga' },
+    awayFotmobId: 9864,
     script: MALAGA_HALF_SCRIPT,
   },
 };
@@ -442,8 +481,9 @@ function fotmobMatch() {
         scoreStr: `${s.home} - ${s.away}`,
         halfs: {
           firstHalfStarted: fotmobHalf(state.halfs.firstHalfStarted),
-          firstHalfEnded: fotmobHalf(state.halfs.firstHalfEnded),
-          secondHalfStarted: fotmobHalf(state.halfs.secondHalfStarted),
+          // --nohalfs면 전반 시작만 주고 나머지는 숨긴다 (실경기에서 그랬다)
+          firstHalfEnded: NO_HALFS ? '' : fotmobHalf(state.halfs.firstHalfEnded),
+          secondHalfStarted: NO_HALFS ? '' : fotmobHalf(state.halfs.secondHalfStarted),
           gameEnded: fotmobHalf(state.halfs.gameEnded),
         },
       },

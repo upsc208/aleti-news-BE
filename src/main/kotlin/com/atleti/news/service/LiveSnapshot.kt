@@ -71,8 +71,15 @@ data class LiveGoal(
  */
 data class LiveSnapshot(
     val source: LiveSource,
-    /** 화면에 그대로 쓰는 한글 상태. 예: `경기전`, `경기중`, `경기종료` */
+    /** 화면에 그대로 쓰는 한글 상태. 예: `경기전`, `경기중`, `전반종료`, `경기종료` */
     val status: String,
+    /**
+     * 소스가 준 원본 상태 코드. 화면에는 안 나가고 **로그로만** 쓴다.
+     *
+     * 8/20 경기에서 하프타임 표기가 `전반종료`인 것은 알아냈지만 그때의 코드는 기록이 없어
+     * 종료 판정을 방어적으로 짤 수밖에 없었다. 다음 경기에서는 남게 한다.
+     */
+    val statusCode: String = "",
     val homeTeam: String,
     val awayTeam: String,
     val homeScore: Int,
@@ -82,6 +89,13 @@ data class LiveSnapshot(
     val goals: List<LiveGoal>,
     /** 폴링을 멈춰도 되는 상태인지 (종료·취소·연기) */
     val finished: Boolean,
+    /**
+     * 하프타임인지. 네이버만 알려준다 — FotMob 스냅샷에서는 항상 false다.
+     *
+     * FotMob의 `halfs.firstHalfEnded`가 안 올 때 시계를 멈출 근거가 된다
+     * (2026-08-20 말라가전에서 실제로 끝내 안 왔다).
+     */
+    val halftime: Boolean = false,
     /** 경기 시계 기준점. FotMob만 준다 — 네이버 스냅샷에서는 null */
     val periods: LivePeriods? = null
 )

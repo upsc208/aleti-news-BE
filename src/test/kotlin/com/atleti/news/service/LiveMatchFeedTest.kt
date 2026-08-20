@@ -277,6 +277,59 @@ class LiveMatchFeedTest {
         assertEquals(plain.key, plain.copy(nameLatin = "Julián Álvarez").key)
     }
 
+    // ── 종료·하프타임 판정 (8/20 말라가전에서 드러난 문제) ────────────────
+    //
+    // 네이버의 하프타임 표기가 `전반종료`인데 contains("종료")가 이걸 경기 종료로 읽었다.
+    // 폴러가 전반 끝나자마자 멈춰서 후반 골이 통째로 안 나갔다 (docs/round1.md).
+
+    @Test
+    @DisplayName("전반종료는 경기 종료가 아니다")
+    fun testHalftimeIsNotFinished() {
+        val g = game("x", null, statusCode = "STARTED", statusInfo = "전반종료")
+        assertFalse(NaverSportsClient.isFinished(g))
+        assertTrue(NaverSportsClient.isHalftime(g))
+    }
+
+    @Test
+    @DisplayName("경기종료는 경기 종료다")
+    fun testFullTimeIsFinished() {
+        assertTrue(NaverSportsClient.isFinished(game("x", null, statusCode = "RESULT", statusInfo = "경기종료")))
+        // 표기만 있고 코드가 아직 안 바뀐 경우도 잡아야 한다
+        assertTrue(NaverSportsClient.isFinished(game("x", null, statusCode = "STARTED", statusInfo = "경기종료")))
+    }
+
+    @Test
+    @DisplayName("statusCode가 종료면 표기와 무관하게 종료다")
+    fun testFinishedByCode() {
+        assertTrue(NaverSportsClient.isFinished(game("x", null, statusCode = "RESULT", statusInfo = "경기중")))
+        assertTrue(NaverSportsClient.isFinished(game("x", null, statusCode = "CANCEL", statusInfo = "경기전")))
+    }
+
+    @Test
+    @DisplayName("경기중·경기전은 종료도 하프타임도 아니다")
+    fun testInProgressIsNeither() {
+        for (label in listOf("경기중", "경기전")) {
+            val g = game("x", null, statusCode = "STARTED", statusInfo = label)
+            assertFalse(NaverSportsClient.isFinished(g), label)
+            assertFalse(NaverSportsClient.isHalftime(g), label)
+        }
+    }
+
+    @Test
+    @DisplayName("모르는 표기는 안 끝난 것으로 본다 — 일찍 멈추면 경기가 통째로 날아간다")
+    fun testUnknownLabelKeepsPolling() {
+        // 늦게 멈추는 쪽은 킥오프 +3시간에 어차피 폴링이 끝난다. 일찍 멈추는 쪽은 복구가 없다
+        assertFalse(NaverSportsClient.isFinished(game("x", null, statusCode = "STARTED", statusInfo = "후반종료")))
+        assertFalse(NaverSportsClient.isFinished(game("x", null, statusCode = "STARTED", statusInfo = "연장전반")))
+    }
+
+    @Test
+    @DisplayName("공백이 섞여도 정확 일치로 본다")
+    fun testLabelIgnoresSpaces() {
+        assertTrue(NaverSportsClient.isFinished(game("x", null, statusCode = "STARTED", statusInfo = "경기 종료")))
+        assertTrue(NaverSportsClient.isHalftime(game("x", null, statusCode = "STARTED", statusInfo = "전반 종료")))
+    }
+
     // ── 상태 변화 브로드캐스트 (8/15 실경기에서 드러난 문제) ──────────────
     //
     // 8/15 마르세유전에서 하프타임에 화면 시계가 안 멈췄다. 서버는 전반 종료 시각을
@@ -397,6 +450,102 @@ class LiveMatchFeedTest {
         val after = state(periods = periods, homeScore = 1)
 
         assertFalse(LiveMatchPoller.clockChanged(before, after))
+    }
+
+    // ── 라이브 정보 지연 (8/20 실측: 골 알림이 시청자보다 7~31초 빨랐다) ──
+
+    private fun snap(home: Int, away: Int) = LiveSnapshot(
+        source = LiveSource.NAVER, status = "경기중",
+        homeTeam = "AT 마드리드", awayTeam = "말라가",
+        homeScore = home, awayScore = away, competition = "라리가",
+        goals = emptyList(), finished = false
+    )
+
+    @Test
+    @DisplayName("아직 안 묵은 스냅샷은 안 내보낸다")
+    fun testDrainHoldsFreshSnapshot() {
+        val t0 = java.time.Instant.parse("2026-08-20T04:30:00Z")
+        val q = ArrayDeque(listOf(t0 to snap(1, 0)))
+
+        // 20초밖에 안 지났다 (지연 30초)
+        assertNull(LiveMatchPoller.drainDue(q, t0.plusSeconds(20).minusSeconds(30)))
+        assertEquals(1, q.size, "대기열에 그대로 남아 있어야 한다")
+    }
+
+    @Test
+    @DisplayName("30초가 지나면 내보낸다")
+    fun testDrainReleasesAfterDelay() {
+        val t0 = java.time.Instant.parse("2026-08-20T04:30:00Z")
+        val q = ArrayDeque(listOf(t0 to snap(1, 0)))
+
+        val due = LiveMatchPoller.drainDue(q, t0.plusSeconds(30).minusSeconds(30))
+        assertEquals(1, due?.homeScore)
+        assertTrue(q.isEmpty())
+    }
+
+    @Test
+    @DisplayName("묵은 게 여럿이면 그중 가장 최신을 내보낸다")
+    fun testDrainTakesNewestDue() {
+        // 스냅샷은 매번 전체 상태라 중간을 건너뛰어도 변화를 놓치지 않는다
+        val t0 = java.time.Instant.parse("2026-08-20T04:30:00Z")
+        val q = ArrayDeque(
+            listOf(
+                t0 to snap(0, 0),
+                t0.plusSeconds(5) to snap(1, 0),
+                t0.plusSeconds(10) to snap(2, 0),
+                t0.plusSeconds(60) to snap(3, 0)   // 아직 안 묵음
+            )
+        )
+
+        val due = LiveMatchPoller.drainDue(q, t0.plusSeconds(10))
+        assertEquals(2, due?.homeScore, "10초까지 중 가장 최신")
+        assertEquals(1, q.size, "안 묵은 것만 남는다")
+    }
+
+    // ── 화면 시계 지연 (8/20 말라가전 실측: 쿠팡플레이보다 27~33초 빨랐다) ──
+
+    @Test
+    @DisplayName("기준점 셋을 같은 폭으로 민다")
+    fun testClockDelayShiftsAllAnchors() {
+        val p = LivePeriods(
+            firstHalfStarted = at("2026-08-20T04:08:20+09:00"),
+            firstHalfEnded = at("2026-08-20T04:55:10+09:00"),
+            secondHalfStarted = at("2026-08-20T05:10:40+09:00")
+        )
+        val d = LiveMatchPoller.delayed(p, 30)!!
+
+        assertEquals(at("2026-08-20T04:08:50+09:00"), d.firstHalfStarted)
+        assertEquals(at("2026-08-20T04:55:40+09:00"), d.firstHalfEnded)
+        assertEquals(at("2026-08-20T05:11:10+09:00"), d.secondHalfStarted)
+    }
+
+    @Test
+    @DisplayName("하프타임에 멈추는 값은 지연과 무관하다 — 차이라서")
+    fun testClockDelayKeepsFrozenValue() {
+        // 화면은 하프타임에 `firstHalfEnded - firstHalfStarted`를 띄운다.
+        // 둘을 같이 밀었으므로 멈춘 시각은 그대로여야 한다
+        val p = LivePeriods(
+            firstHalfStarted = at("2026-08-20T04:08:20+09:00"),
+            firstHalfEnded = at("2026-08-20T04:55:10+09:00")
+        )
+        val d = LiveMatchPoller.delayed(p, 30)!!
+
+        val before = java.time.Duration.between(p.firstHalfStarted, p.firstHalfEnded)
+        val after = java.time.Duration.between(d.firstHalfStarted, d.firstHalfEnded)
+        assertEquals(before, after)
+    }
+
+    @Test
+    @DisplayName("0이면 아무것도 안 민다 — 지연 없이 되돌릴 수 있어야 한다")
+    fun testClockDelayZeroIsNoop() {
+        val p = LivePeriods(firstHalfStarted = at("2026-08-20T04:08:20+09:00"))
+        assertEquals(p, LiveMatchPoller.delayed(p, 0))
+    }
+
+    @Test
+    @DisplayName("기준점이 없으면 그대로 null")
+    fun testClockDelayNullSafe() {
+        assertNull(LiveMatchPoller.delayed(null, 30))
     }
 
     // ── 시계 조회 간격 ────────────────────────────────────────────────────
