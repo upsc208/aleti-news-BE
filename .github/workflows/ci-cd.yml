@@ -75,8 +75,7 @@ jobs:
       - name: Transfer files
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
-          JAR=$(ls build/libs/*.jar | grep -v -- '-plain\.jar
- | head -1)
+          JAR=$(ls build/libs/*.jar | grep -v -- '-plain' | head -1)
           if [ -z "$JAR" ]; then echo "실행 jar를 찾지 못했습니다"; exit 1; fi
           echo "보낼 jar: $JAR"
           scp -i ~/.ssh/deploy_key "$JAR" "${{ secrets.OCI_USER }}@${{ secrets.OCI_HOST }}:/opt/atleti-news/app-new.jar"
