@@ -1,6 +1,7 @@
 package com.atleti.news.service
 
 import com.atleti.news.dto.LivePeriods
+import com.atleti.news.dto.LiveSubstitution
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.CancellationException
@@ -107,6 +108,7 @@ class FotMobLiveClient(
             awayScore = teams.at("/1/score").asInt(),
             competition = root.at("/general/leagueName").asText(),
             goals = parseGoals(root.at("/content/matchFacts/events/events")),
+            substitutions = parseSubstitutions(root.at("/content/matchFacts/events/events")),
             finished = finished || cancelled,
             periods = parsePeriods(status)
         )
@@ -193,6 +195,36 @@ class FotMobLiveClient(
             }
             // 네이버 쪽과 같은 순서 보장을 준다 — 소스가 바뀌어도 목록 순서는 흔들리지 않아야 한다
             .sortedBy { it.totalMinute }
+            .toList()
+
+    /**
+     * 선수 교체. **네이버에는 이 데이터가 아예 없어서** 여기가 유일한 소스다 (2026-08-20 확인).
+     *
+     * ```json
+     * { "type": "Substitution", "time": 46, "isHome": true, "injuredPlayerOut": false,
+     *   "swap": [ {"name": "Marcos Llorente"}, {"name": "Jorge Domínguez"} ] }
+     * ```
+     *
+     * `swap`은 **[나가는 선수, 들어오는 선수] 순서**다. 둘 중 하나라도 이름이 비면 버린다 —
+     * 화살표 한쪽이 빈 채로 보드에 뜨는 것보다 아예 안 뜨는 게 낫다.
+     */
+    private fun parseSubstitutions(events: JsonNode): List<LiveSubstitution> =
+        events.asSequence()
+            .filter { it.at("/type").asText() == "Substitution" }
+            .mapNotNull { event ->
+                val swap = event.at("/swap")
+                val out = swap.at("/0/name").asText().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val into = swap.at("/1/name").asText().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                LiveSubstitution(
+                    minute = event.at("/time").asInt(),
+                    addedTime = event.at("/overloadTime").asInt(0),
+                    isHome = event.at("/isHome").asBoolean(),
+                    playerOut = out,
+                    playerIn = into,
+                    injury = event.at("/injuredPlayerOut").asBoolean()
+                )
+            }
+            .sortedBy { it.minute + it.addedTime }
             .toList()
 
     private fun logCacheControl(matchId: String, cacheControl: String?) {

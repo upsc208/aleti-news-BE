@@ -1,6 +1,7 @@
 package com.atleti.news.service
 
 import com.atleti.news.dto.LivePeriods
+import com.atleti.news.dto.LiveSubstitution
 
 /**
  * 라이브 정보를 어디서 가져왔는지 (docs/live-match-feed-design.md 8.3).
@@ -87,6 +88,8 @@ data class LiveSnapshot(
     /** 대회명. 네이버는 한글(`라리가`), FotMob은 라틴(`LaLiga`)으로 준다 */
     val competition: String,
     val goals: List<LiveGoal>,
+    /** 선수 교체. FotMob만 준다 — 네이버 스냅샷에서는 항상 비어 있다 */
+    val substitutions: List<LiveSubstitution> = emptyList(),
     /** 폴링을 멈춰도 되는 상태인지 (종료·취소·연기) */
     val finished: Boolean,
     /**

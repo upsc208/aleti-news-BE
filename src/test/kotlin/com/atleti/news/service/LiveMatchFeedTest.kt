@@ -2,6 +2,8 @@ package com.atleti.news.service
 
 import com.atleti.news.dto.LiveMatchState
 import com.atleti.news.dto.LivePeriods
+import com.atleti.news.dto.LiveScorer
+import com.atleti.news.dto.LiveSubstitution
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
@@ -450,6 +452,47 @@ class LiveMatchFeedTest {
         val after = state(periods = periods, homeScore = 1)
 
         assertFalse(LiveMatchPoller.clockChanged(before, after))
+    }
+
+    // ── Redis 왕복 (스냅샷은 매 턴 JSON으로 저장했다 다시 읽는다) ──────────
+
+    @Test
+    @DisplayName("스냅샷 전체가 JSON을 왕복해도 그대로다")
+    fun testStateSurvivesJsonRoundTrip() {
+        /*
+          이 테스트가 막는 것: DTO에 계산 프로퍼티(`val x get() = ...`)를 하나라도 두면
+          Jackson이 내보내기만 하고 되읽지 못해 **스냅샷 전체가 역직렬화에 실패한다.**
+          그러면 `live`가 통째로 null이 되고, 직전 상태를 못 읽으니 골 알림까지 같이 죽는다.
+          LiveSubstitution에 key를 뒀다가 실제로 그렇게 됐다.
+        */
+        val mapper = ObjectMapper()
+            .registerKotlinModule()
+            .registerModule(JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+
+        val full = state(
+            periods = LivePeriods(
+                firstHalfStarted = at("2026-08-20T04:08:20+09:00"),
+                firstHalfEnded = at("2026-08-20T04:55:10+09:00")
+            ),
+            homeScore = 2,
+            awayScore = 1
+        ).copy(
+            scorers = listOf(
+                LiveScorer("훌리안 알바레스", 14, 0, isHome = true, ownGoal = false, nameLatin = "Julián Álvarez")
+            ),
+            substitutions = listOf(
+                LiveSubstitution(46, 0, isHome = true, playerOut = "Marcos Llorente", playerIn = "Jorge Domínguez"),
+                LiveSubstitution(70, 2, isHome = false, playerOut = "David Larrubia", playerIn = "Chupe", injury = true)
+            )
+        )
+
+        val back = mapper.readValue(mapper.writeValueAsString(full), LiveMatchState::class.java)
+
+        assertEquals(full.substitutions, back.substitutions)
+        assertEquals(full.scorers, back.scorers)
+        assertEquals(full.homeScore, back.homeScore)
+        assertEquals(full.status, back.status)
     }
 
     // ── 라이브 정보 지연 (8/20 실측: 골 알림이 시청자보다 7~31초 빨랐다) ──

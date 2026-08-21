@@ -29,6 +29,13 @@ data class LiveMatchState(
     val awayScore: Int,
     val scorers: List<LiveScorer>,
     /**
+     * 선수 교체. **FotMob만 준다** — 네이버 응답에는 교체 데이터가 아예 없다(2026-08-20 확인).
+     *
+     * 그래서 이름이 라틴 표기뿐이다. 보드는 원래 로마자라 문제가 없지만 채팅 라인으로는
+     * 쓰지 않는다 (설계 11장: 채팅은 한글, 보드는 로마자).
+     */
+    val substitutions: List<LiveSubstitution> = emptyList(),
+    /**
      * 이 경기의 킥오프 예정 시각. 화면이 경기 시계를 세는 기준점이다.
      *
      * 5초마다 시계를 밀어 줄 수는 없으므로(그러려면 초당 폴링이 필요하다) 기준점만 주고
@@ -55,6 +62,32 @@ data class LivePeriods(
     val firstHalfStarted: OffsetDateTime? = null,
     val firstHalfEnded: OffsetDateTime? = null,
     val secondHalfStarted: OffsetDateTime? = null
+)
+
+/**
+ * 교체 한 건. 이름은 라틴 표기뿐이다 (FotMob이 유일한 소스라서).
+ *
+ * 화면이 "방금 일어난 교체"로 연출할지는 **[minute]을 경기 시계와 대봐야** 정할 수 있다.
+ * FotMob 응답에 캐시가 붙어 있어 한참 지난 교체가 뒤늦게 도착할 수 있기 때문이다
+ * (2026-08-20 종료 경기 실측 `max-age=900`. 라이브 중 값은 아직 미확인).
+ *
+ * **계산 프로퍼티를 두지 않는다.** 이 클래스는 [LiveMatchState]에 실려 Redis를 왕복하는데,
+ * Jackson은 계산 프로퍼티를 내보내기만 하고 되읽지는 못한다. 한 번 넣었다가 스냅샷 전체가
+ * 역직렬화에 실패해 `live`가 통째로 null이 됐다(골 알림까지 같이 죽었다).
+ * 같은 교체인지 가리는 키는 화면이 필드로 만든다.
+ */
+data class LiveSubstitution(
+    val minute: Int,
+    /** 추가시간(분). 없으면 0 */
+    val addedTime: Int,
+    /** 홈팀 교체인지 */
+    val isHome: Boolean,
+    /** 나가는 선수 */
+    val playerOut: String,
+    /** 들어오는 선수 */
+    val playerIn: String,
+    /** 부상 교체인지 — FotMob이 알려준다 */
+    val injury: Boolean = false
 )
 
 /** 득점 한 건. [isHome]과 [ownGoal]을 함께 봐야 어느 팀 득점인지 정해진다. */

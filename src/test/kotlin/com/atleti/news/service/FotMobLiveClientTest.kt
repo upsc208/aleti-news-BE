@@ -46,6 +46,70 @@ class FotMobLiveClientTest {
         }
     """.trimIndent()
 
+    // ── 선수 교체 (2026-08-20 말라가전 실측 형태) ─────────────────────────
+    //
+    // 네이버에는 교체 데이터가 아예 없어서 FotMob이 유일한 소스다.
+
+    private val subsResponse = """
+        {
+          "general": { "homeTeam": { "name": "Atletico Madrid", "id": 9906 },
+                       "awayTeam": { "name": "Malaga", "id": 9864 },
+                       "started": true, "finished": false },
+          "header": { "status": { "started": true, "finished": false, "cancelled": false },
+                      "teams": [ { "name": "Atletico Madrid", "score": 2 }, { "name": "Malaga", "score": 0 } ] },
+          "content": { "matchFacts": { "events": { "events": [
+            { "type": "Substitution", "time": 46, "overloadTime": null, "isHome": true,
+              "injuredPlayerOut": false,
+              "swap": [ { "name": "Marcos Llorente" }, { "name": "Jorge Domínguez" } ] },
+            { "type": "Card", "time": 50, "isHome": true, "player": { "name": "Koke" } },
+            { "type": "Substitution", "time": 61, "overloadTime": null, "isHome": false,
+              "injuredPlayerOut": true,
+              "swap": [ { "name": "David Larrubia" }, { "name": "Chupe" } ] },
+            { "type": "Substitution", "time": 70, "overloadTime": null, "isHome": true,
+              "swap": [ { "name": "" }, { "name": "Álex Baena" } ] }
+          ] } } }
+        }
+    """.trimIndent()
+
+    @Test
+    @DisplayName("교체를 파싱한다 — swap은 [나가는 선수, 들어오는 선수] 순서다")
+    fun testParseSubstitutions() {
+        val snapshot = client.parseSnapshot(subsResponse)
+
+        // 카드는 섞여 와도 걸러지고, 이름이 빈 항목(70')은 버린다
+        assertEquals(2, snapshot.substitutions.size)
+
+        val first = snapshot.substitutions.first()
+        assertEquals(46, first.minute)
+        assertEquals("Marcos Llorente", first.playerOut)
+        assertEquals("Jorge Domínguez", first.playerIn)
+        assertTrue(first.isHome)
+        assertFalse(first.injury)
+
+        val second = snapshot.substitutions[1]
+        assertFalse(second.isHome)
+        assertTrue(second.injury, "부상 교체는 injuredPlayerOut으로 구분된다")
+    }
+
+    @Test
+    @DisplayName("이름이 한쪽이라도 비면 버린다 — 화살표 한쪽이 빈 채로 보드에 뜨면 안 된다")
+    fun testSubstitutionNeedsBothNames() {
+        val snapshot = client.parseSnapshot(subsResponse)
+        assertTrue(snapshot.substitutions.none { it.playerOut.isBlank() || it.playerIn.isBlank() })
+    }
+
+    @Test
+    @DisplayName("같은 응답은 같은 값을 준다 — 화면이 필드로 중복을 가린다")
+    fun testSubstitutionIsStable() {
+        // 화면은 이 필드들을 이어붙여 "이미 띄운 교체"를 가린다. 값이 흔들리면
+        // 같은 교체가 보드에 두 번 뜬다.
+        // (DTO에 계산 프로퍼티를 두지 않는 이유는 LiveMatchState 쪽 주석 참고 —
+        //  Jackson이 되읽지 못해 스냅샷 전체가 깨진다)
+        val a = client.parseSnapshot(subsResponse).substitutions.first()
+        val b = client.parseSnapshot(subsResponse).substitutions.first()
+        assertEquals(a, b)
+    }
+
     @Test
     @DisplayName("스코어와 득점자를 파싱한다")
     fun testParseFinishedMatch() {

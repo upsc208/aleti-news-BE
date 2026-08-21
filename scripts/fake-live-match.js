@@ -158,6 +158,15 @@ const goal = (id, t, desc, isHome, player, extra = {}) => ({
   goal: { isHome, ownGoal: false, ...player, ...extra },
 });
 
+/**
+ * 선수 교체. 골과 달리 **FotMob 응답에만 실린다** — 네이버에는 교체 데이터가 없다.
+ * 그래서 이 이벤트는 네이버 쪽 스코어·득점자를 건드리지 않는다.
+ */
+const sub = (id, t, desc, isHome, out, into, extra = {}) => ({
+  t, kind: 'sub', id, desc,
+  sub: { isHome, outEn: out.en, inEn: into.en, outKo: out.ko, inKo: into.ko, ...extra },
+});
+
 const STRESS_SCRIPT = [
   { t: 0, kind: 'status', code: 'STARTED', info: '경기중', desc: '킥오프' },
 
@@ -233,6 +242,9 @@ const STRESS_SCRIPT = [
 const MALAGA_P = {
   // ── 아틀레티 ──
   alvarez: { ko: '훌리안 알바레스', en: 'Julián Álvarez' },
+  domInguez: { ko: '호르헤 도밍게스', en: 'Jorge Domínguez' },
+  lemar: { ko: '토마 르마르', en: 'Thomas Lemar' },
+  martin: { ko: '카를로스 마르틴', en: 'Carlos Martín' },
   sorloth: { ko: '알렉산더 쇠를로트', en: 'Alexander Sørloth' },
   baena: { ko: '알렉스 바에나', en: 'Álex Baena' },
   lookman: { ko: '아데몰라 루크만', en: 'Ademola Lookman' },
@@ -301,8 +313,24 @@ const MALAGA_HALF_SCRIPT = [
 
   goal('h7', 200, '루크만 동점골', true, MALAGA_P.lookman),
 
-  // 여기서 시계가 멈춰야 한다 (8/15에 안 멈췄던 것)
-  { t: 260, kind: 'status', code: 'HALFTIME', info: '전반종료', desc: '전반 종료 — 시계가 멈춰야 한다' },
+  /*
+    ── 교체 ── FotMob에만 실린다. 보드가 5초간 교체 화면으로 바뀌어야 한다.
+
+    골보다 늦게 뜬다. 골은 네이버를 5초마다 보지만 교체는 FotMob을 45초마다 보고,
+    거기에 라이브 지연(기본 30초)이 더 붙는다. 그래서 대본에서도 서로 띄워 둔다 —
+    붙여 놓으면 어느 교체가 늦은 건지 화면만 보고는 구분이 안 된다.
+  */
+  sub('s1', 110, '요렌테 → 도밍게스 (보드가 교체 화면으로)', true, MALAGA_P.llorente, MALAGA_P.domInguez),
+
+  // 상대팀 교체 — **보드가 안 바뀌어야 정상이다** (아틀레티 것만 띄운다)
+  sub('s2', 175, '라루비아 → 로렌소 (말라가 — 보드 안 바뀜)', false, MALAGA_P.larrubia, MALAGA_P.lorenzo),
+
+  // 부상 교체 — 화살표가 ⇄ 가 아니라 ✚ 로 떠야 한다
+  sub('s3', 225, '르마르 → 마르틴 (부상 교체 — ✚ 표기)', true, MALAGA_P.lemar, MALAGA_P.martin, { injury: true }),
+
+  // 여기서 시계가 멈춰야 한다 (8/15에 안 멈췄던 것).
+  // 마지막 교체가 화면에 뜰 시간을 두고 잡는다 (FotMob 주기 + 지연)
+  { t: 330, kind: 'status', code: 'HALFTIME', info: '전반종료', desc: '전반 종료 — 시계가 멈춰야 한다' },
 ];
 
 const SCENARIOS = {
@@ -337,7 +365,17 @@ if (!SCENARIO) {
   console.error(`알 수 없는 대본입니다. 쓸 수 있는 값: ${Object.keys(SCENARIOS).join(', ')}`);
   process.exit(1);
 }
-const SCRIPT = SCENARIO.script;
+/**
+ * 대본은 **시각순으로 정렬해 둔다.**
+ *
+ * 실행 루프가 `SCRIPT[nextEvent]` 하나만 보고 때를 기다리므로(tick), 배열 순서가
+ * 시각 순서와 다르면 앞선 항목이 끝날 때까지 뒤 항목을 아예 안 쳐다본다.
+ * 실제로 교체를 대본 끝에 적어 넣었다가 t=110짜리가 t=200 뒤에 묶여 안 나왔다.
+ *
+ * 같은 시각끼리는 적어 둔 순서를 지킨다(정렬이 안정적이다) — `cancel` 다음 `restore`처럼
+ * 순서가 뜻을 갖는 짝이 있다.
+ */
+const SCRIPT = [...SCENARIO.script].sort((a, b) => a.t - b.t);
 
 // ─────────────────────────── 상태 ───────────────────────────
 
@@ -359,6 +397,7 @@ const state = {
   statusCode: 'BEFORE',
   statusInfo: '경기전',
   goals: [],          // { id, isHome, minute, added, ownGoal, ko, en }
+  subs: [],           // { id, isHome, minute, added, outEn, inEn, injury } — FotMob에만 실린다
   naverDown: false,
 
   /**
@@ -498,6 +537,16 @@ function fotmobMatch() {
           events: [
             // 골이 아닌 이벤트도 섞어 둔다 — 파서가 걸러내는지 함께 확인한다
             { type: 'Half', time: 45 },
+            { type: 'Card', time: 33, isHome: true, player: { name: 'Koke' } },
+            // 교체는 **네이버에 없어서** 여기가 유일한 소스다. swap은 [나가는 선수, 들어오는 선수]
+            ...state.subs.map((s) => ({
+              type: 'Substitution',
+              time: s.minute,
+              overloadTime: s.added || null,
+              isHome: s.isHome,
+              injuredPlayerOut: s.injury || false,
+              swap: [{ name: s.outEn }, { name: s.inEn }],
+            })),
             ...state.goals.map((g) => ({
               type: 'Goal',
               time: g.minute,
@@ -621,6 +670,10 @@ function applyEvent(ev) {
     // 분을 지금 찍는다 — LED 시계와 같은 계산이라 둘이 어긋날 수 없다
     const { time, added } = matchMinute();
     state.goals.push({ id: ev.id, minute: time, added, ...ev.goal });
+  } else if (ev.kind === 'sub') {
+    // 교체도 분을 지금 찍는다. 골과 달리 스코어에는 영향이 없다
+    const { time, added } = matchMinute();
+    state.subs.push({ id: ev.id, minute: time, added, ...ev.sub });
   } else if (ev.kind === 'cancel') {
     const hit = state.goals.find((g) => g.id === ev.id);
     if (hit) cancelled.set(ev.id, hit);
@@ -634,7 +687,12 @@ function applyEvent(ev) {
   }
 
   const s = scores();
-  const mark = ev.kind === 'goal' ? '⚽' : ev.kind === 'cancel' ? '❌' : ev.kind === 'restore' ? '♻️' : '▶';
+  const mark =
+    ev.kind === 'goal' ? '⚽'
+    : ev.kind === 'sub' ? '🔄'
+    : ev.kind === 'cancel' ? '❌'
+    : ev.kind === 'restore' ? '♻️'
+    : '▶';
   console.log('');
   log(`${mark} 대본: ${ev.desc}   →  ${s.home}-${s.away}`);
   console.log('');

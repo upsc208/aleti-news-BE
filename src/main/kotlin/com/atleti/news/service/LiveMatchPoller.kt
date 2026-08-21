@@ -3,6 +3,7 @@ package com.atleti.news.service
 import com.atleti.news.dto.ChatMessageType
 import com.atleti.news.dto.LiveMatchState
 import com.atleti.news.dto.LivePeriods
+import com.atleti.news.dto.LiveSubstitution
 import com.atleti.news.dto.LiveScorer
 import com.atleti.news.repository.UpcomingMatchRepository
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -81,6 +82,14 @@ class LiveMatchPoller(
 
     /** 직전 턴의 경기 상태. 바뀐 순간을 FotMob 재조회 신호로 쓴다 */
     private val lastStatus = ConcurrentHashMap<String, String>()
+
+    /**
+     * FotMob에서 받아 둔 교체 목록. 네이버에는 이 데이터가 없어서 주 스냅샷에 얹어 준다.
+     *
+     * 골처럼 매 턴 새로 받는 게 아니라 **FotMob을 부를 때만** 갱신되므로, 마지막으로 받은
+     * 것을 들고 있다가 계속 실어 보낸다. 전체 목록이라 덮어쓰기로 충분하다.
+     */
+    private val substitutions = ConcurrentHashMap<String, List<LiveSubstitution>>()
 
     /**
      * FotMob에서 한 번만 받아 두면 되는 표기들 — 경기 내내 안 바뀐다.
@@ -249,7 +258,16 @@ class LiveMatchPoller(
         // 후반 시작 시각까지 받으면 시계가 완성된다. 시작 전에는 물어볼 이유가 없다
         val needsClock = started && !snapshot.finished && periods?.secondHalfStarted == null
 
-        val wait = if (needsNames) LATIN_RETRY else clockRetryInterval(periods, Instant.now())
+        // 교체는 **네이버에 없어서** FotMob을 계속 봐야 안다. 경기 내내 물어보는 유일한 이유다
+        val needsSubs = started && !snapshot.finished
+
+        // 교체만 기다리는 구간이 경기의 대부분이다. 시계 기준점이 다 모인 뒤에는
+        // 이 간격이 그대로 FotMob 호출 주기가 된다 (응답 243KB — 5초마다 때릴 값이 아니다)
+        val wait = when {
+            needsNames -> LATIN_RETRY
+            needsClock -> clockRetryInterval(periods, Instant.now())
+            else -> SUBS_RETRY
+        }
         val nextTry = fotMobRetryAfter[matchId]
 
         // 상태가 방금 바뀌었으면 간격을 무시하고 지금 물어본다.
@@ -261,7 +279,7 @@ class LiveMatchPoller(
         val statusShifted = lastStatus.put(matchId, snapshot.status) != snapshot.status
         val due = statusShifted || nextTry == null || nextTry.isBefore(Instant.now())
 
-        if ((needsNames || needsTeams || needsClock) && due) {
+        if ((needsNames || needsTeams || needsClock || needsSubs) && due) {
             fotMobRetryAfter[matchId] = Instant.now().plus(wait)
             val fotMob = runCatching { fotMobLiveClient.fetchSnapshot(matchId) }
                 .onFailure { log.warn("⚠️ [Live] FotMob 보강 실패 (matchId={}): {}", matchId, it.message) }
@@ -272,18 +290,20 @@ class LiveMatchPoller(
                 if (fotMob.homeTeam.isNotBlank() && fotMob.awayTeam.isNotBlank()) {
                     latinLabels[matchId] = LatinLabels(fotMob.homeTeam, fotMob.awayTeam, fotMob.competition)
                 }
+                if (fotMob.substitutions.isNotEmpty()) substitutions[matchId] = fotMob.substitutions
                 fotMob.periods?.let { fresh ->
                     if (fresh.secondHalfStarted != null && periods?.secondHalfStarted == null) {
                         log.info("ℹ️ [Live] 후반 시작 {} — 경기 시계 기준점 확보 (matchId={})",
                             fresh.secondHalfStarted, matchId)
                     }
-                    clockAnchors[matchId] = fresh
+                    clockAnchors[matchId] = mergePeriods(clockAnchors[matchId], fresh)
                 }
             }
         }
 
         return snapshot.copy(
             goals = snapshot.goals.map { it.copy(nameLatin = known[it.key]) },
+            substitutions = substitutions[matchId] ?: snapshot.substitutions,
             periods = fillClockFromStatus(matchId, snapshot)
         )
     }
@@ -521,6 +541,7 @@ class LiveMatchPoller(
         scorers = snapshot.goals.map {
             LiveScorer(it.name, it.time, it.addedTime, it.isHome, it.ownGoal, it.nameLatin)
         },
+        substitutions = snapshot.substitutions,
         kickoff = kickoff,
         periods = delayed(snapshot.periods, delaySeconds),
         updatedAt = OffsetDateTime.now()
@@ -737,6 +758,15 @@ class LiveMatchPoller(
         private val FOTMOB_CLOCK_RETRY: Duration = Duration.ofSeconds(60)
 
         /**
+         * 교체만 보려고 FotMob을 다시 부르는 간격.
+         *
+         * 응답이 243KB라 촘촘히 때릴 수 없다. 게다가 FotMob은 캐시를 길게 잡는다 —
+         * 2026-08-20 종료 경기 실측이 `max-age=900`이었다. 더 자주 불러도 같은 값이
+         * 돌아올 뿐이라, 화면이 뒤늦게 받은 교체를 연출하지 않도록 막는 쪽이 본질이다.
+         */
+        private val SUBS_RETRY: Duration = Duration.ofSeconds(45)
+
+        /**
          * 시계가 곧 바뀌는 구간의 간격. 이 구간에서는 늦게 아는 만큼 화면의 시계가
          * 그대로 틀린 값을 보여주므로 짧게 잡는다 ([clockRetryInterval]).
          */
@@ -744,6 +774,23 @@ class LiveMatchPoller(
 
         /** 이 시점부터 하프타임을 지켜본다. 전반 추가시간이 아무리 짧아도 45분 전에는 안 끝난다 */
         private val HALFTIME_WATCH_FROM: Duration = Duration.ofMinutes(43)
+
+        /**
+         * FotMob이 준 기준점을 기존 값 **위에 얹는다.** 통째로 덮어쓰지 않는다.
+         *
+         * FotMob은 `halfs`를 부분적으로만 준다 — 2026-08-20 말라가전에서 `firstHalfEnded`가
+         * 끝내 안 왔다. 그걸 그대로 덮어쓰면 네이버 `전반종료`로 메꿔 둔 값이 **매 조회마다
+         * 지워지고 다시 만들어진다.** 하프타임에 시계가 멈추는 게 아니라 조회 주기마다
+         * 뒤로 밀리고, 그때마다 상태 변화 브로드캐스트까지 나간다.
+         *
+         * 그래서 FotMob 값이 있으면 그것을 쓰고(정확도가 높다), 없으면 갖고 있던 것을 지킨다.
+         */
+        internal fun mergePeriods(current: LivePeriods?, fresh: LivePeriods): LivePeriods =
+            LivePeriods(
+                firstHalfStarted = fresh.firstHalfStarted ?: current?.firstHalfStarted,
+                firstHalfEnded = fresh.firstHalfEnded ?: current?.firstHalfEnded,
+                secondHalfStarted = fresh.secondHalfStarted ?: current?.secondHalfStarted
+            )
 
         /**
          * 대기열에서 [cutoff]보다 오래된 것을 모두 꺼내고 **그중 가장 최신**을 돌려준다.
@@ -792,7 +839,11 @@ class LiveMatchPoller(
          * 여기서 잡고 싶은 건 **골 없이 바뀌는 것**뿐이다: 경기 시작·하프타임·후반 시작·종료.
          */
         internal fun clockChanged(previous: LiveMatchState, state: LiveMatchState): Boolean =
-            previous.status != state.status || !samePeriods(previous.periods, state.periods)
+            previous.status != state.status ||
+                !samePeriods(previous.periods, state.periods) ||
+                // 교체는 골과 달리 채팅 메시지를 안 만든다. 여기서 안 잡으면 화면까지
+                // 갈 방법이 없어서, 다음 골이 터질 때까지 보드가 모르고 있게 된다
+                previous.substitutions != state.substitutions
 
         /**
          * 두 기준점이 **같은 순간**을 가리키는지.
