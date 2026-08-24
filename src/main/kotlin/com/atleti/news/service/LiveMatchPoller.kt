@@ -56,7 +56,7 @@ class LiveMatchPoller(
     private val chatService: ChatService,
     private val upcomingMatchRepository: UpcomingMatchRepository,
     @Value("\${atleti.live.enabled}") private val enabled: Boolean,
-    @Value("\${atleti.live.delay-seconds:30}") private val delaySeconds: Long
+    @Value("\${atleti.live.delay-seconds:25}") private val delaySeconds: Long
 ) {
     private val log = LoggerFactory.getLogger(LiveMatchPoller::class.java)
 
@@ -76,6 +76,15 @@ class LiveMatchPoller(
 
     /** 경기별 `골 키 → 라틴 이름`. 한 경기 분량이라 메모리에 둔다 */
     private val latinNames = ConcurrentHashMap<String, MutableMap<String, String>>()
+
+    /**
+     * 라틴 이름을 물어보려고 **한 번이라도 시도한** 골 키.
+     *
+     * 새 골이 들어온 첫 턴에만 FotMob 조회 간격을 건너뛰기 위한 표식이다. 이게 없으면
+     * 이름을 못 받은 골이 매 턴 "새 골"로 보여 5초마다 243KB를 때리게 된다 —
+     * 첫 시도 이후의 재시도는 [LATIN_RETRY] 간격이 맡는다.
+     */
+    private val latinPending = ConcurrentHashMap<String, MutableSet<String>>()
 
     /** 경기별 시계 기준점 (전·후반 실제 시작 시각) */
     private val clockAnchors = ConcurrentHashMap<String, LivePeriods>()
@@ -103,13 +112,28 @@ class LiveMatchPoller(
     private val fotMobRetryAfter = ConcurrentHashMap<String, Instant>()
 
     /**
-     * 아직 내보내지 않은 스냅샷 — `{가져온 시각, 스냅샷}`.
+     * 아직 내보내지 않은 스냅샷.
      *
      * 라이브 정보를 **중계보다 늦게** 내보내기 위한 대기열이다 ([takeDue] 참고).
      * 인스턴스 안에만 둔다. 재시작하면 비므로 [delaySeconds]만큼 발행이 쉬는데,
      * 스냅샷은 매번 전체 상태라 다시 차오르면 그대로 이어진다.
      */
-    private val feedBuffer = ConcurrentHashMap<String, ArrayDeque<Pair<Instant, LiveSnapshot>>>()
+    private val feedBuffer = ConcurrentHashMap<String, ArrayDeque<Buffered>>()
+
+    /**
+     * 대기열 한 칸. [holdFrom]부터 [delaySeconds]를 재서 내보낸다.
+     *
+     * 도착 시각이 아니라 **기준 시각**을 들고 있는 것이 요점이다 ([releaseAnchor]).
+     */
+    internal data class Buffered(val holdFrom: Instant, val snapshot: LiveSnapshot)
+
+    /**
+     * 대기열에 마지막으로 넣은 스냅샷의 골 키.
+     *
+     * "이번 스냅샷에서 **새로 생긴** 골"을 가리는 데만 쓴다 — 발행 여부를 정하는 Redis 집합
+     * (`live:goals`)과는 별개다. 그쪽은 이미 알린 골, 이쪽은 이미 대기열에 넣은 골이다.
+     */
+    private val bufferedGoalKeys = ConcurrentHashMap<String, Set<String>>()
 
     /** 예정 경기 목록 캐시 — 경기가 없는 대부분의 시간에 5초마다 DB를 두드리지 않기 위한 것 */
     @Volatile private var activeCache: List<ActiveMatch> = emptyList()
@@ -277,7 +301,17 @@ class LiveMatchPoller(
         // 기준점이 필요한 순간을 지나쳐 버린다 — 리허설에서 하프타임이 통째로
         // 지나간 뒤에야 firstHalfEnded가 도착했다.
         val statusShifted = lastStatus.put(matchId, snapshot.status) != snapshot.status
-        val due = statusShifted || nextTry == null || nextTry.isBefore(Instant.now())
+
+        // **방금 들어간 골도 간격을 무시한다.** [wait]은 다음 조회를 언제 할지만 정할 뿐,
+        // 이번 턴을 열어 주는 것은 이미 예약된 [nextTry]다. 교체 조회가 생기기 전에는
+        // 이름·시계가 다 모이면 FotMob을 아예 안 불러 예약이 늘 만료 상태였고, 그래서 새 골이
+        // 들어오면 곧바로 이름을 물어봤다. 지금은 교체 때문에 [SUBS_RETRY] 예약이 항상 걸려
+        // 있어서, 새 골의 이름이 그 예약이 풀릴 때까지 밀린다 — 그동안 보드는 이름 없이
+        // 함성만 돈다. 상태 변화와 같은 자격으로 예약을 건너뛰게 한다.
+        val pending = latinPending.getOrPut(matchId) { ConcurrentHashMap.newKeySet() }
+        val newGoal = markUnnamedGoals(snapshot.goals, known, pending)
+
+        val due = statusShifted || newGoal || nextTry == null || nextTry.isBefore(Instant.now())
 
         if ((needsNames || needsTeams || needsClock || needsSubs) && due) {
             fotMobRetryAfter[matchId] = Instant.now().plus(wait)
@@ -482,6 +516,7 @@ class LiveMatchPoller(
             LiveMatchKeys.end(matchId), Instant.now().toEpochMilli().toString(), LiveMatchKeys.LIVE_TTL
         )
         feedBuffer.remove(matchId)
+        bufferedGoalKeys.remove(matchId)
     }
 
     /**
@@ -505,15 +540,39 @@ class LiveMatchPoller(
      *
      * 덤으로 **넣자마자 VAR로 취소된 골은 아예 안 나간다.** 두 변화가 같은 대기 구간
      * 안에서 상쇄되기 때문인데, 시청자가 보지도 못한 골을 알렸다 취소하는 것보다 낫다.
+     *
+     * ## 이미 늦게 온 골은 더 붙잡지 않는다
+     *
+     * 지연을 **도착 시각**부터 재면, 소스가 늦게 준 골까지 똑같이 [delaySeconds]를 더 기다린다.
+     * 2026-08-23 비야레알전에서 네이버가 4골 중 2골을 50~110초 늦게 실어 줬는데, 거기에
+     * 30초를 더 얹어 시청자가 골 장면을 보고 한참 뒤에야 보드가 돌았다.
+     *
+     * 지연의 목적은 **소스가 중계보다 빠를 때**를 막는 것뿐이다. 이미 중계보다 늦게 온 것을
+     * 더 붙잡을 이유가 없다. 그래서 기준을 도착 시각이 아니라 **골이 실제로 일어난 시각**으로
+     * 잡는다 ([releaseAnchor]) — 소스가 늦은 만큼이 지연에서 그대로 깎인다.
+     *
+     * 앞지를 위험은 안 늘어난다. 실제 시각은 골 분(1분 단위)에서 **그 분의 가장 늦은 순간**으로
+     * 잡고, 도착 시각보다 뒤로는 안 간다. 결국 발행은 항상 `max(도착, 실제 + 지연)`이라
+     * 지금보다 이른 적은 있어도 실제 골로부터 [delaySeconds]보다 이른 적은 없다.
+     *
+     * 새 골이 없는 스냅샷(시계 틱·교체)은 지금까지처럼 도착 시각부터 잰다.
      */
     private fun takeDue(matchId: String, fresh: LiveSnapshot): LiveSnapshot? {
         if (delaySeconds == 0L) return fresh
 
         val queue = feedBuffer.getOrPut(matchId) { ArrayDeque() }
         synchronized(queue) {
-            queue.addLast(Instant.now() to fresh)
+            val now = Instant.now()
 
-            return drainDue(queue, Instant.now().minusSeconds(delaySeconds))
+            // 첫 스냅샷은 "새 골"이 없는 것으로 친다. 폴링을 늦게 시작했거나 재시작한 직후라
+            // 이미 들어가 있던 골까지 새 골로 보면, 그 골의 실제 시각(한참 전)이 기준이 되어
+            // 대기열이 통째로 즉시 발행된다 — 시청자가 아직 못 본 장면까지 새어 나간다
+            val seen = bufferedGoalKeys.put(matchId, fresh.goals.mapTo(HashSet()) { it.key })
+            val newGoals = if (seen == null) emptyList() else fresh.goals.filter { it.key !in seen }
+
+            queue.addLast(Buffered(releaseAnchor(now, newGoals, clockAnchors[matchId]), fresh))
+
+            return drainDue(queue, now.minusSeconds(delaySeconds))
         }
     }
 
@@ -763,8 +822,16 @@ class LiveMatchPoller(
          * 응답이 243KB라 촘촘히 때릴 수 없다. 게다가 FotMob은 캐시를 길게 잡는다 —
          * 2026-08-20 종료 경기 실측이 `max-age=900`이었다. 더 자주 불러도 같은 값이
          * 돌아올 뿐이라, 화면이 뒤늦게 받은 교체를 연출하지 않도록 막는 쪽이 본질이다.
+         *
+         * **45초에서 20초로 낮췄다 (2026-08-24 비야레알전).** 교체 화면이 실제 교체보다
+         * 50~60초 뒤에 떴는데, 이 간격이 그대로 원인이었다: 여기서 최대 45초(평균 22초)를
+         * 기다린 뒤 [delaySeconds] 지연이 **그 위에 또 얹힌다.** 20초면 평균 10초로 줄어
+         * 교체가 골과 비슷한 체감으로 뜬다.
+         *
+         * 라이브 응답의 캐시 수명은 아직 실측 전이다. 캐시가 20초보다 길게 잡혀 있으면
+         * 이 단축은 헛돌기만 하므로, 다음 경기 로그에서 `Cache-Control`을 확인해야 한다.
          */
-        private val SUBS_RETRY: Duration = Duration.ofSeconds(45)
+        private val SUBS_RETRY: Duration = Duration.ofSeconds(20)
 
         /**
          * 시계가 곧 바뀌는 구간의 간격. 이 구간에서는 늦게 아는 만큼 화면의 시계가
@@ -774,6 +841,9 @@ class LiveMatchPoller(
 
         /** 이 시점부터 하프타임을 지켜본다. 전반 추가시간이 아무리 짧아도 45분 전에는 안 끝난다 */
         private val HALFTIME_WATCH_FROM: Duration = Duration.ofMinutes(43)
+
+        /** 한 하프의 정규 시간(분). 골 분에서 전·후반을 가르는 경계다 ([occurredAt]) */
+        private const val HALF_MINUTES = 45
 
         /**
          * FotMob이 준 기준점을 기존 값 **위에 얹는다.** 통째로 덮어쓰지 않는다.
@@ -793,19 +863,70 @@ class LiveMatchPoller(
             )
 
         /**
-         * 대기열에서 [cutoff]보다 오래된 것을 모두 꺼내고 **그중 가장 최신**을 돌려준다.
+         * 이 스냅샷을 붙잡는 시간을 어디서부터 잴지.
+         *
+         * 새 골이 없으면 [arrival] — 시계 틱·교체는 소스가 실시간으로 주므로 도착부터 재는
+         * 것이 맞다. 새 골이 있으면 **그 골이 실제로 일어난 시각**까지 기준을 당긴다.
+         * 소스가 늦게 준 만큼 이미 흘러간 시간이라, 지연에서 그대로 깎여 나간다.
+         *
+         * [arrival]보다 뒤로는 안 간다. 분 표기가 1분 단위라 추정이 도착보다 늦게 잡히는
+         * 경우가 실제로 있는데(2026-08-23 비야레알전 78' 골), 그때 기준을 미래로 두면
+         * 지금보다 오히려 더 붙잡게 된다. 늦추지는 않는 쪽으로 자른다.
+         *
+         * 골이 여럿이면 **가장 늦은 것**을 쓴다. 한 스냅샷에 두 골이 같이 들어오면 늦은 쪽이
+         * 아직 안 익었을 수 있는데, 이른 쪽 기준으로 내보내면 그 골이 앞질러 나간다.
+         */
+        internal fun releaseAnchor(
+            arrival: Instant,
+            newGoals: List<LiveGoal>,
+            periods: LivePeriods?
+        ): Instant {
+            val occurred = newGoals.mapNotNull { occurredAt(it, periods) }.maxOrNull() ?: return arrival
+            return minOf(arrival, occurred)
+        }
+
+        /**
+         * 골이 실제로 일어난 시각. 기준점이 없으면 null — 지어내지 않고 도착 시각으로 물러선다.
+         *
+         * **그 분의 가장 늦은 순간으로 잡는다.** `78'`은 77분 0초부터 78분 0초 사이 어딘가인데,
+         * 이른 쪽으로 잡으면 최대 1분을 덜 기다려 중계를 앞지를 수 있다. 늦게 잡아 손해 보는
+         * 것은 최대 1분이고, 그건 원래 소스가 빨랐다는 뜻이라 어차피 지연이 걸릴 구간이다.
+         *
+         * 전·후반은 [LiveGoal.time]으로 가른다. 추가시간을 더한 [LiveGoal.totalMinute]으로
+         * 가르면 `45+2`가 후반으로 넘어가 후반 2분으로 읽힌다.
+         */
+        internal fun occurredAt(goal: LiveGoal, periods: LivePeriods?): Instant? =
+            if (goal.time <= HALF_MINUTES) {
+                periods?.firstHalfStarted?.toInstant()
+                    ?.plus(Duration.ofMinutes((goal.time + goal.addedTime).toLong()))
+            } else {
+                periods?.secondHalfStarted?.toInstant()
+                    ?.plus(Duration.ofMinutes((goal.time - HALF_MINUTES + goal.addedTime).toLong()))
+            }
+
+        /**
+         * 대기열에서 내보낼 수 있는 것 중 **가장 최신**을 꺼내고, 그 앞의 것들은 버린다.
          *
          * 중간 것을 버려도 되는 이유: 스냅샷은 매번 **전체 상태**라 건너뛴 변화도 다음
          * 비교에서 그대로 잡힌다. 누적이 아니므로 놓치는 골이 없다.
+         *
+         * **앞에서부터 훑지 않고 뒤에서부터 찾는다.** [Buffered.holdFrom]은 도착 순이 아니다 —
+         * 늦게 온 골은 기준이 과거로 당겨져 뒤에 들어오고도 먼저 익는다([releaseAnchor]).
+         * 앞의 시계 틱이 아직 안 익었다고 거기서 멈추면 그 골이 최대 [delaySeconds]만큼
+         * 다시 갇히는데, 그러면 기준을 당긴 의미가 통째로 사라진다.
+         *
+         * 순서가 뒤집힐 걱정은 없다. 항상 **뒤쪽(더 최신)** 을 골라 내보내고 그 앞을 버리므로
+         * 상태가 되돌아가지 않는다 — 골보다 VAR 취소가 먼저 나가는 일도 생기지 않는다.
          */
         internal fun drainDue(
-            queue: ArrayDeque<Pair<Instant, LiveSnapshot>>,
+            queue: ArrayDeque<Buffered>,
             cutoff: Instant
         ): LiveSnapshot? {
-            var due: LiveSnapshot? = null
-            while (queue.isNotEmpty() && !queue.first().first.isAfter(cutoff)) {
-                due = queue.removeFirst().second
-            }
+            val index = queue.indexOfLast { !it.holdFrom.isAfter(cutoff) }
+            if (index < 0) return null
+
+            val due = queue[index].snapshot
+            repeat(index + 1) { queue.removeFirst() }
             return due
         }
 
@@ -820,7 +941,7 @@ class LiveMatchPoller(
          * 하프타임에 멈추는 값(`firstHalfEnded - firstHalfStarted`)은 차이라서 그대로다.
          *
          * 내부 판단(폴링 간격·하프타임 감시)에는 쓰지 않는다 — 밖으로 나가는 값에만 적용한다.
-         * 그쪽까지 밀면 실제 경기 진행보다 30초 늦게 반응하게 된다.
+         * 그쪽까지 밀면 실제 경기 진행보다 [seconds]만큼 늦게 반응하게 된다.
          */
         internal fun delayed(periods: LivePeriods?, seconds: Long): LivePeriods? {
             if (periods == null || seconds == 0L) return periods
@@ -878,6 +999,21 @@ class LiveMatchPoller(
             val elapsed = Duration.between(firstStart.toInstant(), now)
             return if (elapsed >= HALFTIME_WATCH_FROM) CLOCK_URGENT_RETRY else FOTMOB_CLOCK_RETRY
         }
+
+        /**
+         * 라틴 이름이 아직 없는 골 중 **이번에 처음 보는 것**이 있으면 true.
+         *
+         * 본 것은 [pending]에 남겨 다음 턴부터는 걸리지 않게 한다. 이 표시가 없으면
+         * FotMob이 끝내 이름을 안 주는 골(짝이 안 지어지는 경우가 실제로 있다) 하나 때문에
+         * 매 턴 243KB를 다시 받게 된다. 첫 시도 이후의 재시도는 [LATIN_RETRY]가 맡는다.
+         */
+        internal fun markUnnamedGoals(
+            goals: List<LiveGoal>,
+            known: Map<String, String>,
+            pending: MutableSet<String>
+        ): Boolean =
+            // count는 첫 참에서 끊지 않는다 — 한 턴에 두 골이 들어와도 둘 다 표시돼야 한다
+            goals.count { !known.containsKey(it.key) && pending.add(it.key) } > 0
 
         /**
          * 두 소스의 골 목록을 팀·분으로 맞춰 `골 키 → 라틴 이름` 표를 만든다.

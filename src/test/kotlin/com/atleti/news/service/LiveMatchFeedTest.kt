@@ -508,7 +508,7 @@ class LiveMatchFeedTest {
     @DisplayName("아직 안 묵은 스냅샷은 안 내보낸다")
     fun testDrainHoldsFreshSnapshot() {
         val t0 = java.time.Instant.parse("2026-08-20T04:30:00Z")
-        val q = ArrayDeque(listOf(t0 to snap(1, 0)))
+        val q = ArrayDeque(listOf(LiveMatchPoller.Buffered(t0, snap(1, 0))))
 
         // 20초밖에 안 지났다 (지연 30초)
         assertNull(LiveMatchPoller.drainDue(q, t0.plusSeconds(20).minusSeconds(30)))
@@ -519,7 +519,7 @@ class LiveMatchFeedTest {
     @DisplayName("30초가 지나면 내보낸다")
     fun testDrainReleasesAfterDelay() {
         val t0 = java.time.Instant.parse("2026-08-20T04:30:00Z")
-        val q = ArrayDeque(listOf(t0 to snap(1, 0)))
+        val q = ArrayDeque(listOf(LiveMatchPoller.Buffered(t0, snap(1, 0))))
 
         val due = LiveMatchPoller.drainDue(q, t0.plusSeconds(30).minusSeconds(30))
         assertEquals(1, due?.homeScore)
@@ -533,16 +533,142 @@ class LiveMatchFeedTest {
         val t0 = java.time.Instant.parse("2026-08-20T04:30:00Z")
         val q = ArrayDeque(
             listOf(
-                t0 to snap(0, 0),
-                t0.plusSeconds(5) to snap(1, 0),
-                t0.plusSeconds(10) to snap(2, 0),
-                t0.plusSeconds(60) to snap(3, 0)   // 아직 안 묵음
+                LiveMatchPoller.Buffered(t0, snap(0, 0)),
+                LiveMatchPoller.Buffered(t0.plusSeconds(5), snap(1, 0)),
+                LiveMatchPoller.Buffered(t0.plusSeconds(10), snap(2, 0)),
+                LiveMatchPoller.Buffered(t0.plusSeconds(60), snap(3, 0))   // 아직 안 묵음
             )
         )
 
         val due = LiveMatchPoller.drainDue(q, t0.plusSeconds(10))
         assertEquals(2, due?.homeScore, "10초까지 중 가장 최신")
         assertEquals(1, q.size, "안 묵은 것만 남는다")
+    }
+
+    // ── 이미 늦게 온 골은 더 붙잡지 않는다 (8/23 비야레알전) ──
+
+    /**
+     * 그 경기의 실제 기준점 — FotMob `halfs`에서 그대로 가져왔다.
+     *
+     * **로그에 찍힌 값을 쓰면 안 된다.** 상태 변화 로그의 `periods`는 이미 [LiveMatchPoller.delayed]를
+     * 통과한 값이라 지연만큼 더해져 있다. 여기 필요한 건 실제 시각이다.
+     */
+    private val villarreal = LivePeriods(
+        firstHalfStarted = at("2026-08-23T17:02:02+02:00"),
+        firstHalfEnded = at("2026-08-23T17:52:43+02:00"),
+        secondHalfStarted = at("2026-08-23T18:10:36+02:00")
+    )
+
+    private fun goal(time: Int, addedTime: Int = 0) =
+        LiveGoal("시메오네", time, addedTime, isHome = true, ownGoal = false)
+
+    @Test
+    @DisplayName("네이버가 늦게 준 골은 기준이 실제 시각으로 당겨진다")
+    fun testReleaseAnchorRewindsForLateGoal() {
+        // 실제 85' 골 = 후반 40분 = 18:50:36+02:00. 네이버는 18:51:27에야 실어 줬다
+        val arrival = at("2026-08-23T18:51:27+02:00").toInstant()
+
+        val anchor = LiveMatchPoller.releaseAnchor(arrival, listOf(goal(85)), villarreal)
+
+        assertEquals(at("2026-08-23T18:50:36+02:00").toInstant(), anchor)
+        // 지연 25초를 재도 이미 지난 시각이라 이번 턴에 바로 나간다
+        assertTrue(anchor.plusSeconds(25) < arrival, "51초 늦게 온 골은 더 붙잡을 이유가 없다")
+    }
+
+    @Test
+    @DisplayName("추정이 도착보다 늦게 잡히면 도착 시각으로 자른다")
+    fun testReleaseAnchorNeverExceedsArrival() {
+        // 78' 골이 그랬다 — 분 표기가 1분 단위라 "그 분의 끝"(18:43:36)이
+        // 실제 도착(18:43:22)보다 뒤다. 여기서 미래를 기준으로 두면 지금보다 더 붙잡게 된다
+        val arrival = at("2026-08-23T18:43:22+02:00").toInstant()
+
+        assertEquals(arrival, LiveMatchPoller.releaseAnchor(arrival, listOf(goal(78)), villarreal))
+    }
+
+    @Test
+    @DisplayName("새 골이 없으면 지금까지처럼 도착 시각부터 잰다")
+    fun testReleaseAnchorKeepsArrivalWithoutGoals() {
+        // 시계 틱·교체는 소스가 실시간으로 준다. 여기까지 당기면 지연이 통째로 무너진다
+        val arrival = at("2026-08-23T18:30:00+02:00").toInstant()
+
+        assertEquals(arrival, LiveMatchPoller.releaseAnchor(arrival, emptyList(), villarreal))
+    }
+
+    @Test
+    @DisplayName("기준점이 없으면 도착 시각으로 물러선다")
+    fun testReleaseAnchorFallsBackWithoutPeriods() {
+        // 시각을 지어내느니 지금까지의 동작을 지킨다
+        val arrival = at("2026-08-23T18:51:27+02:00").toInstant()
+
+        assertEquals(arrival, LiveMatchPoller.releaseAnchor(arrival, listOf(goal(85)), null))
+        assertEquals(
+            arrival,
+            LiveMatchPoller.releaseAnchor(arrival, listOf(goal(85)), LivePeriods(firstHalfStarted = null))
+        )
+    }
+
+    @Test
+    @DisplayName("한 스냅샷에 두 골이면 늦은 쪽을 기준으로 잡는다")
+    fun testReleaseAnchorTakesLatestGoal() {
+        // 이른 쪽으로 잡으면 아직 안 익은 골이 같이 앞질러 나간다
+        val arrival = at("2026-08-23T18:52:00+02:00").toInstant()
+
+        val anchor = LiveMatchPoller.releaseAnchor(arrival, listOf(goal(59), goal(85)), villarreal)
+        assertEquals(at("2026-08-23T18:50:36+02:00").toInstant(), anchor)
+    }
+
+    @Test
+    @DisplayName("전반 추가시간 골을 후반으로 읽지 않는다")
+    fun testOccurredAtKeepsAddedTimeInFirstHalf() {
+        // totalMinute(47)으로 전·후반을 가르면 45+2가 후반 2분이 되어 20분쯤 앞으로 튄다
+        assertEquals(
+            at("2026-08-23T17:49:02+02:00").toInstant(),   // 전반 시작 + 47분
+            LiveMatchPoller.occurredAt(goal(45, 2), villarreal)
+        )
+    }
+
+    @Test
+    @DisplayName("후반 추가시간 골도 후반 시작부터 센다")
+    fun testOccurredAtHandlesSecondHalfAddedTime() {
+        assertEquals(
+            at("2026-08-23T18:58:36+02:00").toInstant(),   // 후반 시작 + 48분
+            LiveMatchPoller.occurredAt(goal(90, 3), villarreal)
+        )
+    }
+
+    @Test
+    @DisplayName("늦게 온 골은 앞에 쌓인 시계 틱에 막히지 않는다")
+    fun testDrainLetsLateGoalPassQueuedTicks() {
+        // 대기열은 도착 순인데 기준 시각은 그렇지 않다. 앞에서부터 훑다 멈추면
+        // 기준을 당겨 놓고도 그 골이 다시 25초를 갇힌다 — 당긴 의미가 사라진다
+        val t0 = java.time.Instant.parse("2026-08-23T16:51:00Z")
+        val q = ArrayDeque(
+            listOf(
+                LiveMatchPoller.Buffered(t0.plusSeconds(5), snap(0, 0)),    // 시계 틱, 아직 안 익음
+                LiveMatchPoller.Buffered(t0.plusSeconds(10), snap(0, 0)),   // 시계 틱, 아직 안 익음
+                LiveMatchPoller.Buffered(t0.minusSeconds(51), snap(1, 0))   // 늦게 온 골 — 이미 익음
+            )
+        )
+
+        val due = LiveMatchPoller.drainDue(q, t0)
+        assertEquals(1, due?.homeScore, "익은 골이 나가야 한다")
+        assertTrue(q.isEmpty(), "앞의 틱들은 버린다 — 스냅샷은 전체 상태라 잃는 것이 없다")
+    }
+
+    @Test
+    @DisplayName("되돌아가지 않는다 — 항상 더 최신 쪽을 내보낸다")
+    fun testDrainNeverGoesBackwards() {
+        // 골보다 VAR 취소가 먼저 나가는 순서 뒤집힘을 막는 성질
+        val t0 = java.time.Instant.parse("2026-08-23T16:51:00Z")
+        val q = ArrayDeque(
+            listOf(
+                LiveMatchPoller.Buffered(t0.minusSeconds(60), snap(1, 0)),   // 골
+                LiveMatchPoller.Buffered(t0.minusSeconds(10), snap(0, 0))    // 취소, 더 최신
+            )
+        )
+
+        assertEquals(0, LiveMatchPoller.drainDue(q, t0)?.homeScore, "더 최신인 취소 상태가 나간다")
+        assertTrue(q.isEmpty())
     }
 
     // ── 화면 시계 지연 (8/20 말라가전 실측: 쿠팡플레이보다 27~33초 빨랐다) ──
@@ -625,5 +751,55 @@ class LiveMatchFeedTest {
         )
         val now = at("2026-08-15T01:25:00+09:00").toInstant()
         assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(periods, now))
+    }
+
+    // ── 새 골은 FotMob 조회 간격을 건너뛴다 (8/24 비야레알전) ──
+
+    @Test
+    @DisplayName("이름 없는 새 골이 들어오면 예약된 간격을 무시하고 물어본다")
+    fun testNewGoalPreemptsFotMobInterval() {
+        val pending = mutableSetOf<String>()
+        val goal = LiveGoal("훌리안 알바레스", 12, 0, isHome = true, ownGoal = false)
+
+        assertTrue(
+            LiveMatchPoller.markUnnamedGoals(listOf(goal), emptyMap(), pending),
+            "처음 보는 골이면 교체 조회 예약(45→20초)이 걸려 있어도 지금 물어봐야 한다"
+        )
+    }
+
+    @Test
+    @DisplayName("같은 골로는 매 턴 다시 때리지 않는다")
+    fun testUnnamedGoalTriggersOnlyOnce() {
+        val pending = mutableSetOf<String>()
+        val goal = LiveGoal("훌리안 알바레스", 12, 0, isHome = true, ownGoal = false)
+
+        LiveMatchPoller.markUnnamedGoals(listOf(goal), emptyMap(), pending)
+
+        // FotMob이 끝내 짝을 못 지어 주는 골이 실제로 있다. 그 하나 때문에
+        // 5초마다 243KB를 받으면 안 된다 — 재시도는 LATIN_RETRY가 맡는다
+        assertFalse(LiveMatchPoller.markUnnamedGoals(listOf(goal), emptyMap(), pending))
+    }
+
+    @Test
+    @DisplayName("한 턴에 두 골이 들어와도 둘 다 표시된다")
+    fun testMarksEveryUnnamedGoalInOneTurn() {
+        val pending = mutableSetOf<String>()
+        val goals = listOf(
+            LiveGoal("훌리안 알바레스", 12, 0, isHome = true, ownGoal = false),
+            LiveGoal("안토니오 힐", 14, 0, isHome = true, ownGoal = false)
+        )
+
+        assertTrue(LiveMatchPoller.markUnnamedGoals(goals, emptyMap(), pending))
+        assertEquals(2, pending.size, "첫 참에서 끊으면 두 번째 골이 표시되지 않는다")
+    }
+
+    @Test
+    @DisplayName("이미 이름이 붙은 골은 조회를 부르지 않는다")
+    fun testNamedGoalDoesNotTrigger() {
+        val pending = mutableSetOf<String>()
+        val goal = LiveGoal("훌리안 알바레스", 12, 0, isHome = true, ownGoal = false)
+
+        assertFalse(LiveMatchPoller.markUnnamedGoals(listOf(goal), mapOf(goal.key to "Julián Álvarez"), pending))
+        assertTrue(pending.isEmpty())
     }
 }
