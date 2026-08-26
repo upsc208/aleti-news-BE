@@ -11,7 +11,7 @@ import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -24,6 +24,7 @@ class FotMobScrapeException(message: String, cause: Throwable? = null) : Runtime
 class MatchScraperService(
     private val objectMapper: ObjectMapper,
     private val matchResultRepository: MatchResultRepository,
+    private val transactionTemplate: TransactionTemplate,
     // 기본값은 실제 FotMob. 로컬 리허설에서만 가짜 서버로 돌린다 (scripts/fake-live-match.js)
     @Value("\${atleti.source.fotmob-base-url}") private val fotmobBaseUrl: String
 ) {
@@ -32,7 +33,6 @@ class MatchScraperService(
     private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val KST = ZoneId.of("Asia/Seoul")
 
-    @Transactional
     suspend fun scrapeAndSaveLatestMatch(): MatchResult? = withContext(Dispatchers.IO) {
         try {
             val lastMatchNode = fetchOverviewNode().at("/lastMatch")
@@ -179,16 +179,19 @@ class MatchScraperService(
             homeFormation = stats["homeFormation"], awayFormation = stats["awayFormation"]
         )
 
-        val existing = matchResultRepository.findByMatchId(matchId)
-        if (existing != null) {
-            matchResultRepository.delete(existing)
-            matchResultRepository.flush()
-        }
-
         println("✅ [FotMob Scrape] 데이터 저장 시도: $homeTeam vs $awayTeam ($kstTimeStr)")
-        val saved = matchResultRepository.save(matchResult)
-        matchResultRepository.flush()
-        return saved
+
+        // 같은 경기를 지우고 새로 넣는다. 한 트랜잭션으로 묶지 않으면 중간 실패 시
+        // **최근 경기 기록이 통째로 사라진 상태**가 남는다 — 화면의 직전 경기 카드가 빈다.
+        // suspend 함수에 @Transactional을 붙여도 withContext가 스레드를 옮겨 경계가 안 생긴다
+        // (근거: SuspendTransactionTest). 그래서 명시적으로 경계를 친다.
+        return transactionTemplate.execute {
+            matchResultRepository.findByMatchId(matchId)?.let {
+                matchResultRepository.delete(it)
+                matchResultRepository.flush()
+            }
+            matchResultRepository.save(matchResult)
+        }
     }
 
     private suspend fun fetchMatchStats(matchId: String): Map<String, String> = withContext(Dispatchers.IO) {

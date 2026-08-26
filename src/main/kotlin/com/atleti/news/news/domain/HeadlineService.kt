@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.springframework.data.domain.PageRequest
 import org.springframework.stereotype.Service
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import com.atleti.news.news.external.GeminiService
@@ -12,7 +13,8 @@ import com.atleti.news.news.external.GeminiService
 class HeadlineService(
     private val geminiService: GeminiService,
     private val newsArticleRepository: NewsArticleRepository,
-    private val newsHeadlineRepository: NewsHeadlineRepository
+    private val newsHeadlineRepository: NewsHeadlineRepository,
+    private val transactionTemplate: TransactionTemplate
 ) {
     companion object {
         private const val MAX_HEADLINES = 5          // DB에 유지할 최대 헤드라인 수 (롤링)
@@ -72,16 +74,25 @@ class HeadlineService(
             return@withContext
         }
 
-        // 4. 저장
-        fresh.forEach { newsHeadlineRepository.save(NewsHeadline(content = it)) }
-        println("✅ [헤드라인] ${fresh.size}개 등록: ${fresh.joinToString(" | ")}")
+        // 4~5. 저장과 롤링 삭제를 한 트랜잭션으로.
+        //
+        // 나눠서 하면 중간 실패 시 **새 헤드라인만 들어가고 옛것이 안 지워진** 상태가 남아
+        // 화면에 5개를 넘겨 뜬다. 반대로 삭제만 되면 헤드라인이 비어 보인다.
+        // suspend 함수에 @Transactional을 붙여도 withContext가 스레드를 옮겨 경계가 안 생기므로
+        // (근거: SuspendTransactionTest) 여기서 명시적으로 친다.
+        var deleted = 0
+        transactionTemplate.executeWithoutResult {
+            fresh.forEach { newsHeadlineRepository.save(NewsHeadline(content = it)) }
 
-        // 5. 롤링: 최신 5개만 남기고 오래된 건 삭제
-        val all = newsHeadlineRepository.findAllByOrderByCreatedAtDesc()
-        if (all.size > MAX_HEADLINES) {
-            val toDelete = all.drop(MAX_HEADLINES)
-            newsHeadlineRepository.deleteAll(toDelete)
-            println("🧹 [헤드라인] 오래된 ${toDelete.size}개 삭제 (최신 ${MAX_HEADLINES}개 유지)")
+            // 롤링: 최신 MAX_HEADLINES개만 남긴다. 방금 넣은 것을 포함해 세야 하므로 저장 뒤에 읽는다
+            val all = newsHeadlineRepository.findAllByOrderByCreatedAtDesc()
+            if (all.size > MAX_HEADLINES) {
+                val toDelete = all.drop(MAX_HEADLINES)
+                newsHeadlineRepository.deleteAll(toDelete)
+                deleted = toDelete.size
+            }
         }
+        println("✅ [헤드라인] ${fresh.size}개 등록: ${fresh.joinToString(" | ")}")
+        if (deleted > 0) println("🧹 [헤드라인] 오래된 ${deleted}개 삭제 (최신 ${MAX_HEADLINES}개 유지)")
     }
 }
