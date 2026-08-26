@@ -1,7 +1,7 @@
 package com.atleti.news.service
 
 import com.atleti.news.entity.MatchResult
-import com.atleti.news.entity.UpcomingMatchEntity
+import com.atleti.news.entity.UpcomingMatch
 import com.atleti.news.repository.MatchResultRepository
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -54,7 +54,7 @@ class MatchScraperService(
      *
      * @throws FotMobScrapeException 페이지 접속·파싱에 실패한 경우
      */
-    suspend fun scrapeUpcomingMatches(limit: Int = 3): List<UpcomingMatchEntity> = withContext(Dispatchers.IO) {
+    suspend fun scrapeUpcomingMatches(limit: Int = 3): List<UpcomingMatch> = withContext(Dispatchers.IO) {
         val fixtures = fetchOverviewNode().at("/overviewFixtures")
         if (!fixtures.isArray) throw FotMobScrapeException("overviewFixtures 노드를 찾지 못했습니다")
 
@@ -126,14 +126,14 @@ class MatchScraperService(
         throw FotMobScrapeException("FotMob 페이지를 가져오지 못했습니다: ${lastError?.message}", lastError)
     }
 
-    private fun toUpcomingEntity(node: JsonNode, kickoff: Instant): UpcomingMatchEntity {
+    private fun toUpcomingEntity(node: JsonNode, kickoff: Instant): UpcomingMatch {
         // 홈/원정은 팀 이름이 아니라 FotMob 팀 ID로 판별한다.
         // 상대에 Real Madrid·Rayo Vallecano처럼 madrid가 들어가는 팀이 있어 문자열 비교는 뒤집힌다.
         val isHome = node.at("/home/id").asText() == ATLETI_TEAM_ID
         val opponent = node.at("/opponent/name").asText()
             .ifBlank { if (isHome) node.at("/away/name").asText() else node.at("/home/name").asText() }
 
-        return UpcomingMatchEntity(
+        return UpcomingMatch(
             matchId = node.at("/id").asText().takeIf { it.isNotBlank() },
             opponent = opponent,
             // ChatService.findKickoffTime이 파싱하는 형식과 맞춰야 한다 (ISO_OFFSET_DATE_TIME / KST)

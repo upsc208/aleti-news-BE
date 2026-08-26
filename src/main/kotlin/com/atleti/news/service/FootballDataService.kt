@@ -3,7 +3,7 @@ package com.atleti.news.service
 import com.atleti.news.entity.CollectionLog
 import com.atleti.news.entity.CollectionStatus
 import com.atleti.news.entity.MatchResult
-import com.atleti.news.entity.UpcomingMatchEntity
+import com.atleti.news.entity.UpcomingMatch
 import com.atleti.news.repository.CollectionLogRepository
 import com.atleti.news.repository.MatchResultRepository
 import com.atleti.news.repository.UpcomingMatchRepository
@@ -44,7 +44,7 @@ class FootballDataService(
         }
     }
 
-    suspend fun getUpcomingMatches(): List<UpcomingMatch> {
+    suspend fun getUpcomingMatches(): List<UpcomingMatchResponse> {
         loadFreshUpcoming().takeIf { it.isNotEmpty() }?.let { return it.map { e -> mapToUpcomingMatch(e) } }
 
         // 비어 있거나 전부 지난 경기뿐이면 즉시 갱신을 시도한다 (쿨다운 내에는 재시도하지 않음)
@@ -84,7 +84,7 @@ class FootballDataService(
     }
 
     /** 아직 안 끝난 경기만, 킥오프 순으로 */
-    private fun loadFreshUpcoming(): List<UpcomingMatchEntity> {
+    private fun loadFreshUpcoming(): List<UpcomingMatch> {
         val cutoff = Instant.now().minus(KEEP_AFTER_KICKOFF)
         return upcomingMatchRepository.findAllByOrderByMatchDateAsc()
             .filter { parseKickoff(it.matchDate)?.isAfter(cutoff) == true }
@@ -155,7 +155,7 @@ class FootballDataService(
         )
     }
 
-    private fun mapToUpcomingMatch(entity: UpcomingMatchEntity) = UpcomingMatch(
+    private fun mapToUpcomingMatch(entity: UpcomingMatch) = UpcomingMatchResponse(
         // 경기 전 채팅방 키. 이게 없으면 프론트가 킥오프 전에 방으로 들어갈 방법이 없다
         matchId = entity.matchId,
         opponent = entity.opponent,
@@ -165,7 +165,7 @@ class FootballDataService(
     )
 }
 
-data class MatchStatusResponse(val recentResult: RecentMatch?, val upcomingMatches: List<UpcomingMatch>)
+data class MatchStatusResponse(val recentResult: RecentMatch?, val upcomingMatches: List<UpcomingMatchResponse>)
 
 data class RecentMatch(
     val matchId: String,
@@ -191,7 +191,7 @@ data class PlayerInfo(val name: String, val shirt: String?)
 data class TeamLineupInfo(val formation: String?, val starters: List<PlayerInfo>)
 data class LineupInfo(val home: TeamLineupInfo, val away: TeamLineupInfo)
 
-data class UpcomingMatch(
+data class UpcomingMatchResponse(
     /** 채팅방 키 (ChatService.findKickoffTime이 이 값으로 킥오프를 찾는다). 스크랩에서 못 얻으면 null */
     val matchId: String?,
     val opponent: String,

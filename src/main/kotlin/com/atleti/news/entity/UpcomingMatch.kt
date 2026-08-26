@@ -8,7 +8,7 @@ import java.time.LocalDateTime
     name = "upcoming_match",
     uniqueConstraints = [UniqueConstraint(columnNames = ["opponent", "matchDate"])]
 )
-class UpcomingMatchEntity(
+class UpcomingMatch(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long? = null,
