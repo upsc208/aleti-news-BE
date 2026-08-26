@@ -9,8 +9,8 @@ import org.springframework.stereotype.Component
 import org.springframework.web.socket.messaging.SessionDisconnectEvent
 import org.springframework.web.socket.messaging.SessionSubscribeEvent
 import org.springframework.web.socket.messaging.SessionUnsubscribeEvent
-import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import com.atleti.news.chat.domain.ChatKeys
 
 /** 방 접속자 수 변동 알림 (Pub/Sub 페이로드 = 브로드캐스트 페이로드) */
 data class PresenceEvent(val matchId: String = "", val onlineCount: Long = 0)
@@ -75,20 +75,20 @@ class ChatPresenceTracker(
 
     fun onlineCount(matchId: String): Long =
         try {
-            redis.opsForValue().get("chat:online:$matchId")?.toLongOrNull()?.coerceAtLeast(0) ?: 0
+            redis.opsForValue().get(ChatKeys.online(matchId))?.toLongOrNull()?.coerceAtLeast(0) ?: 0
         } catch (e: Exception) {
             0
         }
 
     private fun changeOnline(matchId: String, delta: Long) {
         try {
-            val key = "chat:online:$matchId"
+            val key = ChatKeys.online(matchId)
             var value = redis.opsForValue().increment(key, delta) ?: return
             if (value < 0) {                                   // 드리프트 방어
                 redis.opsForValue().set(key, "0")
                 value = 0
             }
-            redis.expire(key, Duration.ofHours(24))
+            redis.expire(key, ChatKeys.ROOM_TTL)
 
             // 이미 방에 있는 사람들에게 즉시 알린다.
             // 이게 없으면 각자 입장 시점의 숫자에 머물러, 나중에 누가 들어와도

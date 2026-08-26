@@ -9,7 +9,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
-import java.time.Duration
 import java.time.OffsetDateTime
 import com.atleti.news.live.domain.LiveMatchKeys
 import com.atleti.news.match.domain.MatchKickoff
@@ -74,7 +73,6 @@ class ChatService(
          */
         const val BOT_NICKNAME = "매치봇"
 
-        private const val BANNED_KEY = "chat:banned"
 
         // chat:nick 값의 접두사 — 주인이 브라우저 식별자인지 IP인지 구분한다.
         // 접두사가 없는 값은 IP만 저장하던 옛 기록이다.
@@ -83,11 +81,8 @@ class ChatService(
 
         private const val MAX_RECENT = 100L
         private const val MAX_CONTENT_LENGTH = 200
-        private const val RATE_LIMIT_WINDOW = 10L   // 초
         private const val RATE_LIMIT_MAX = 5        // 창 내 최대 전송 수
         private val URL_PATTERN = Regex("(?i)(https?://|www\\.)")
-
-        private val ROOM_TTL: Duration = Duration.ofHours(24)
 
         fun isFreeRoom(matchId: String) = matchId == FREE_ROOM_ID
     }
@@ -162,7 +157,7 @@ class ChatService(
     /** 최근 메시지 목록에 넣고 모든 인스턴스로 방송한다 */
     private fun store(matchId: String, message: ChatMessage) {
         val json = objectMapper.writeValueAsString(message)
-        val key = "chat:msg:$matchId"
+        val key = ChatKeys.messages(matchId)
 
         val size = redis.opsForList().leftPush(key, json)
         redis.opsForList().trim(key, 0, MAX_RECENT - 1)
@@ -173,7 +168,7 @@ class ChatService(
             // 첫 메시지일 때만 혹시 남아 있을 수 있는 예전 TTL을 떼어낸다.
             if (size == 1L) redis.persist(key)
         } else {
-            redis.expire(key, ROOM_TTL)
+            redis.expire(key, ChatKeys.ROOM_TTL)
         }
         redis.convertAndSend(CHANNEL, json)
     }
@@ -217,7 +212,7 @@ class ChatService(
      */
     fun recentMessages(matchId: String): List<ChatMessage> =
         try {
-            (redis.opsForList().range("chat:msg:$matchId", 0, MAX_RECENT - 1) ?: emptyList())
+            (redis.opsForList().range(ChatKeys.messages(matchId), 0, MAX_RECENT - 1) ?: emptyList())
                 .mapNotNull { runCatching { objectMapper.readValue(it, ChatMessage::class.java) }.getOrNull() }
                 .reversed()
         } catch (e: Exception) {
@@ -281,14 +276,14 @@ class ChatService(
     // --- IP 차단 (6.8): 관리자가 등록한 IP는 전송 거부. Set, TTL 없음(영구) ---
 
     private fun requireNotBanned(ip: String) {
-        if (redis.opsForSet().isMember(BANNED_KEY, ip) == true) {
+        if (redis.opsForSet().isMember(ChatKeys.BANNED, ip) == true) {
             throw ChatException("관리자에 의해 차단된 상태예요.")
         }
     }
 
-    fun ban(ip: String) { redis.opsForSet().add(BANNED_KEY, ip) }
-    fun unban(ip: String) { redis.opsForSet().remove(BANNED_KEY, ip) }
-    fun bannedIps(): Set<String> = redis.opsForSet().members(BANNED_KEY) ?: emptySet()
+    fun ban(ip: String) { redis.opsForSet().add(ChatKeys.BANNED, ip) }
+    fun unban(ip: String) { redis.opsForSet().remove(ChatKeys.BANNED, ip) }
+    fun bannedIps(): Set<String> = redis.opsForSet().members(ChatKeys.BANNED) ?: emptySet()
 
     /**
      * 이 방에서 닉네임을 정한 사람 목록 (관리자 전용).
@@ -297,7 +292,7 @@ class ChatService(
      * 나간 사람도 남지만 차단 대상을 찾는 용도에는 그편이 오히려 유용하다 (방 TTL 24h와 함께 소멸).
      */
     fun participants(matchId: String): List<ChatParticipant> {
-        val entries = redis.opsForHash<String, String>().entries("chat:ipnick:$matchId")
+        val entries = redis.opsForHash<String, String>().entries(ChatKeys.ipNicknames(matchId))
         val banned = bannedIps()
         return entries.map { (ip, nickname) ->
             ChatParticipant(
@@ -337,8 +332,8 @@ class ChatService(
      *   - 메시지에 실리는 ipHash (이름을 바꿔도 같은 사람인 게 화면에 보인다)
      */
     private fun reserveNickname(matchId: String, nickname: String, ip: String, clientId: String?): String {
-        val nickKey = "chat:nick:$matchId"
-        val ipKey = "chat:ipnick:$matchId"
+        val nickKey = ChatKeys.nicknames(matchId)
+        val ipKey = ChatKeys.ipNicknames(matchId)
         val hash = redis.opsForHash<String, String>()
 
         // 선점 시도 (HSETNX: 원자적이라 동시 시도에도 한 명만 성공).
@@ -380,8 +375,8 @@ class ChatService(
      * 제한을 없앤 지금은 늘려둘 이유가 없고, 짧아야 안 쓰는 이름이 제때 풀린다.
      */
     private fun touchNicknameLedgers(nickKey: String, ipKey: String) {
-        redis.expire(nickKey, ROOM_TTL)
-        redis.expire(ipKey, ROOM_TTL)
+        redis.expire(nickKey, ChatKeys.ROOM_TTL)
+        redis.expire(ipKey, ChatKeys.ROOM_TTL)
     }
 
     /** 유사 닉네임 사칭 방지용 정규화: trim → 소문자 → 연속 공백 축약 ("Koke" ≒ "koke ") */
@@ -391,9 +386,9 @@ class ChatService(
     // --- 도배 방지 (6.8): INCR 원자 카운터 + TTL 창 ---
 
     private fun checkRateLimit(ip: String) {
-        val key = "chat:rl:$ip"
+        val key = ChatKeys.rateLimit(ip)
         val count = redis.opsForValue().increment(key) ?: return
-        if (count == 1L) redis.expire(key, Duration.ofSeconds(RATE_LIMIT_WINDOW))
+        if (count == 1L) redis.expire(key, ChatKeys.RATE_LIMIT_WINDOW)
         if (count > RATE_LIMIT_MAX) throw ChatException("메시지를 너무 자주 보내고 있어요. 잠시 후 다시 시도해주세요.")
     }
 }
