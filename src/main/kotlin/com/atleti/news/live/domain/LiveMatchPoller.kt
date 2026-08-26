@@ -69,58 +69,11 @@ class LiveMatchPoller(
     /** 이 인스턴스의 리더 락 소유자 표식 */
     private val instanceId = UUID.randomUUID().toString()
 
-    /** 네이버가 흔들릴 때 쉬어 갈 시각. 리더 한 대만 폴링하므로 메모리에 둬도 된다 */
-    private val backoffUntil = ConcurrentHashMap<String, Instant>()
-    private val failureCount = ConcurrentHashMap<String, Int>()
-
-    /** FotMob 폴백을 유지할 기한. 이 시각까지는 네이버를 다시 건드리지 않는다 */
-    private val fotMobUntil = ConcurrentHashMap<String, Instant>()
-
-    /** 경기별 `골 키 → 라틴 이름`. 한 경기 분량이라 메모리에 둔다 */
-    private val latinNames = ConcurrentHashMap<String, MutableMap<String, String>>()
-
-    /**
-     * 라틴 이름을 물어보려고 **한 번이라도 시도한** 골 키.
-     *
-     * 새 골이 들어온 첫 턴에만 FotMob 조회 간격을 건너뛰기 위한 표식이다. 이게 없으면
-     * 이름을 못 받은 골이 매 턴 "새 골"로 보여 5초마다 243KB를 때리게 된다 —
-     * 첫 시도 이후의 재시도는 [LATIN_RETRY] 간격이 맡는다.
-     */
-    private val latinPending = ConcurrentHashMap<String, MutableSet<String>>()
-
-    /** 경기별 시계 기준점 (전·후반 실제 시작 시각) */
-    private val clockAnchors = ConcurrentHashMap<String, LivePeriods>()
-
-    /** 직전 턴의 경기 상태. 바뀐 순간을 FotMob 재조회 신호로 쓴다 */
-    private val lastStatus = ConcurrentHashMap<String, String>()
-
-    /**
-     * FotMob에서 받아 둔 교체 목록. 네이버에는 이 데이터가 없어서 주 스냅샷에 얹어 준다.
-     *
-     * 골처럼 매 턴 새로 받는 게 아니라 **FotMob을 부를 때만** 갱신되므로, 마지막으로 받은
-     * 것을 들고 있다가 계속 실어 보낸다. 전체 목록이라 덮어쓰기로 충분하다.
-     */
-    private val substitutions = ConcurrentHashMap<String, List<LiveSubstitution>>()
-
     /**
      * FotMob에서 한 번만 받아 두면 되는 표기들 — 경기 내내 안 바뀐다.
      * 보드가 로마자로 그려야 해서 필요한데 네이버는 한글만 준다.
      */
     private data class LatinLabels(val homeTeam: String, val awayTeam: String, val competition: String)
-
-    private val latinLabels = ConcurrentHashMap<String, LatinLabels>()
-
-    /** FotMob 보강(이름·시계)을 다시 시도할 시각 */
-    private val fotMobRetryAfter = ConcurrentHashMap<String, Instant>()
-
-    /**
-     * 아직 내보내지 않은 스냅샷.
-     *
-     * 라이브 정보를 **중계보다 늦게** 내보내기 위한 대기열이다 ([takeDue] 참고).
-     * 인스턴스 안에만 둔다. 재시작하면 비므로 [delaySeconds]만큼 발행이 쉬는데,
-     * 스냅샷은 매번 전체 상태라 다시 차오르면 그대로 이어진다.
-     */
-    private val feedBuffer = ConcurrentHashMap<String, ArrayDeque<Buffered>>()
 
     /**
      * 대기열 한 칸. [holdFrom]부터 [delaySeconds]를 재서 내보낸다.
@@ -130,12 +83,83 @@ class LiveMatchPoller(
     internal data class Buffered(val holdFrom: Instant, val snapshot: LiveSnapshot)
 
     /**
-     * 대기열에 마지막으로 넣은 스냅샷의 골 키.
+     * 경기 하나에 대해 폴러가 들고 있는 기억 전부.
      *
-     * "이번 스냅샷에서 **새로 생긴** 골"을 가리는 데만 쓴다 — 발행 여부를 정하는 Redis 집합
-     * (`live:goals`)과는 별개다. 그쪽은 이미 알린 골, 이쪽은 이미 대기열에 넣은 골이다.
+     * 예전에는 이 값들이 경기별 `ConcurrentHashMap` **12개**에 흩어져 있었다. 종료 시 지워지는
+     * 것은 그중 넷뿐이라 나머지는 앱이 재시작할 때까지 남았고, 무엇보다 **상태를 하나 더할 때마다
+     * 정리 지점을 빠뜨리기 쉬웠다** — 실제로 [latinPending]을 추가하면서 그랬다.
+     * 한 객체로 모으면 정리가 `remove(matchId)` 한 번이 되고, 필드를 더해도 같이 사라진다.
+     *
+     * **동시성** — 폴링 턴은 [turnInProgress]로 한 번에 하나만 돌지만 매번 다른 IO 스레드에서
+     * 실행될 수 있다. 그래서 통째로 갈아 끼우는 값은 `@Volatile`로 두어 다음 턴이 직전 턴의 쓰기를
+     * 보게 한다. 안이 바뀌는 컬렉션은 동시성 컬렉션([latinNames]·[latinPending])이거나
+     * 자체 락으로 감싼다([feedBuffer]는 [takeDue]에서 `synchronized`).
      */
-    private val bufferedGoalKeys = ConcurrentHashMap<String, Set<String>>()
+    private class MatchFeedState {
+        /** 네이버가 흔들릴 때 쉬어 갈 시각. 리더 한 대만 폴링하므로 메모리에 둬도 된다 */
+        @Volatile var backoffUntil: Instant? = null
+
+        /** 연속 실패 횟수. [FAILURES_BEFORE_FALLBACK]에 닿으면 FotMob으로 내려간다 */
+        @Volatile var failureCount: Int = 0
+
+        /** FotMob 폴백을 유지할 기한. 이 시각까지는 네이버를 다시 건드리지 않는다 */
+        @Volatile var fotMobUntil: Instant? = null
+
+        /** FotMob 보강(이름·시계·교체)을 다시 시도할 시각 */
+        @Volatile var fotMobRetryAfter: Instant? = null
+
+        /** `골 키 → 라틴 이름` */
+        val latinNames: MutableMap<String, String> = ConcurrentHashMap()
+
+        /**
+         * 라틴 이름을 물어보려고 **한 번이라도 시도한** 골 키.
+         *
+         * 새 골이 들어온 첫 턴에만 FotMob 조회 간격을 건너뛰기 위한 표식이다. 이게 없으면
+         * 이름을 못 받은 골이 매 턴 "새 골"로 보여 5초마다 243KB를 때리게 된다 —
+         * 첫 시도 이후의 재시도는 [LATIN_RETRY] 간격이 맡는다.
+         */
+        val latinPending: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        @Volatile var latinLabels: LatinLabels? = null
+
+        /** 시계 기준점 (전·후반 실제 시작 시각) */
+        @Volatile var clockAnchor: LivePeriods? = null
+
+        /** 직전 턴의 경기 상태. 바뀐 순간을 FotMob 재조회 신호로 쓴다 */
+        @Volatile var lastStatus: String? = null
+
+        /**
+         * FotMob에서 받아 둔 교체 목록. 네이버에는 이 데이터가 없어서 주 스냅샷에 얹어 준다.
+         *
+         * 골처럼 매 턴 새로 받는 게 아니라 **FotMob을 부를 때만** 갱신되므로, 마지막으로 받은
+         * 것을 들고 있다가 계속 실어 보낸다. 전체 목록이라 덮어쓰기로 충분하다.
+         */
+        @Volatile var substitutions: List<LiveSubstitution>? = null
+
+        /**
+         * 아직 내보내지 않은 스냅샷.
+         *
+         * 라이브 정보를 **중계보다 늦게** 내보내기 위한 대기열이다 ([takeDue] 참고).
+         * 인스턴스 안에만 둔다. 재시작하면 비므로 [delaySeconds]만큼 발행이 쉬는데,
+         * 스냅샷은 매번 전체 상태라 다시 차오르면 그대로 이어진다.
+         */
+        val feedBuffer: ArrayDeque<Buffered> = ArrayDeque()
+
+        /**
+         * 대기열에 마지막으로 넣은 스냅샷의 골 키.
+         *
+         * "이번 스냅샷에서 **새로 생긴** 골"을 가리는 데만 쓴다 — 발행 여부를 정하는 Redis 집합
+         * (`live:goals`)과는 별개다. 그쪽은 이미 알린 골, 이쪽은 이미 대기열에 넣은 골이다.
+         * null이면 아직 한 번도 안 넣은 것 = 첫 스냅샷이다.
+         */
+        @Volatile var bufferedGoalKeys: Set<String>? = null
+    }
+
+    /** 경기별 기억. 폴링이 끝나는 순간([isSettled]) 통째로 사라진다 */
+    private val states = ConcurrentHashMap<String, MatchFeedState>()
+
+    private fun stateOf(matchId: String): MatchFeedState =
+        states.computeIfAbsent(matchId) { MatchFeedState() }
 
     /** 예정 경기 목록 캐시 — 경기가 없는 대부분의 시간에 5초마다 DB를 두드리지 않기 위한 것 */
     @Volatile private var activeCache: List<ActiveMatch> = emptyList()
@@ -208,25 +232,30 @@ class LiveMatchPoller(
 
     private suspend fun pollMatch(match: ActiveMatch) {
         val matchId = match.matchId
-        if (isSettled(matchId, match.kickoff)) return
+        if (isSettled(matchId, match.kickoff)) {
+            // 폴링이 끝났으니 기억도 여기서 놓는다. 이 경기를 다시 볼 일이 없다
+            states.remove(matchId)
+            return
+        }
 
         // 리더가 아니면 이번 턴은 남의 몫이다. 락은 자기 것이면 그대로 이어 잡는다
         if (!acquireLeadership(matchId)) return
 
+        val feed = stateOf(matchId)
         val previous = readState(matchId)
-        val fetched = fetchSnapshot(match, previous) ?: return
+        val fetched = fetchSnapshot(match, feed, previous) ?: return
 
         // 알림을 내보내기 **전에** 라틴 이름을 채운다 — 골 메시지에도 같이 실려야
         // LED가 첫 연출부터 로마자로 그린다.
         //
         // **이 단계까지는 실시간으로 한다.** 라틴 이름·시계 기준점은 지금 받아 둬야 하고,
         // 특히 하프타임 기준점은 그 순간의 시각으로 찍혀야 정확하다. 늦추는 것은 그 다음이다
-        val enriched = withLatinNames(matchId, fetched, started = !OffsetDateTime.now().isBefore(match.kickoff))
+        val enriched = withLatinNames(matchId, feed, fetched, started = !OffsetDateTime.now().isBefore(match.kickoff))
 
         // 중계보다 늦게 내보낸다 — 아직 충분히 묵지 않았으면 이번 턴은 조용히 넘어간다
-        val snapshot = takeDue(matchId, enriched) ?: return
+        val snapshot = takeDue(feed, enriched) ?: return
 
-        val state = toState(snapshot, previous, match.kickoff, latinLabels[matchId])
+        val state = toState(snapshot, previous, match.kickoff, feed.latinLabels)
         writeState(matchId, state)
 
         if (previous == null) {
@@ -248,7 +277,7 @@ class LiveMatchPoller(
             }
         }
 
-        markSettledIfFinished(matchId, snapshot)
+        markSettledIfFinished(matchId, feed, snapshot)
     }
 
     // ── 라틴 이름 채우기 ──────────────────────────────────────────────────
@@ -266,21 +295,22 @@ class LiveMatchPoller(
      */
     private suspend fun withLatinNames(
         matchId: String,
+        feed: MatchFeedState,
         snapshot: LiveSnapshot,
         started: Boolean
     ): LiveSnapshot {
         // FotMob으로 폴백한 상태면 이름도 팀명도 시계 기준점도 이미 그 응답에 들어 있다
         if (snapshot.source == LiveSource.FOTMOB) {
-            latinLabels[matchId] = LatinLabels(snapshot.homeTeam, snapshot.awayTeam, snapshot.competition)
+            feed.latinLabels = LatinLabels(snapshot.homeTeam, snapshot.awayTeam, snapshot.competition)
             return snapshot
         }
 
-        val known = latinNames.getOrPut(matchId) { ConcurrentHashMap() }
-        val periods = clockAnchors[matchId]
+        val known = feed.latinNames
+        val periods = feed.clockAnchor
 
         val needsNames = snapshot.goals.any { !known.containsKey(it.key) }
         // 팀명은 경기 내내 안 바뀐다. 한 번만 받으면 되고, 킥오프 전에도 보드에 필요하다
-        val needsTeams = !latinLabels.containsKey(matchId)
+        val needsTeams = feed.latinLabels == null
         // 후반 시작 시각까지 받으면 시계가 완성된다. 시작 전에는 물어볼 이유가 없다
         val needsClock = started && !snapshot.finished && periods?.secondHalfStarted == null
 
@@ -294,7 +324,7 @@ class LiveMatchPoller(
             needsClock -> clockRetryInterval(periods, Instant.now())
             else -> SUBS_RETRY
         }
-        val nextTry = fotMobRetryAfter[matchId]
+        val nextTry = feed.fotMobRetryAfter
 
         // 상태가 방금 바뀌었으면 간격을 무시하고 지금 물어본다.
         //
@@ -302,7 +332,8 @@ class LiveMatchPoller(
         // 그 안에 알려주는데, 시계 기준점은 FotMob에만 있다. 간격을 기다리면 정작
         // 기준점이 필요한 순간을 지나쳐 버린다 — 리허설에서 하프타임이 통째로
         // 지나간 뒤에야 firstHalfEnded가 도착했다.
-        val statusShifted = lastStatus.put(matchId, snapshot.status) != snapshot.status
+        val statusShifted = feed.lastStatus != snapshot.status
+        feed.lastStatus = snapshot.status
 
         // **방금 들어간 골도 간격을 무시한다.** [wait]은 다음 조회를 언제 할지만 정할 뿐,
         // 이번 턴을 열어 주는 것은 이미 예약된 [nextTry]다. 교체 조회가 생기기 전에는
@@ -310,13 +341,12 @@ class LiveMatchPoller(
         // 들어오면 곧바로 이름을 물어봤다. 지금은 교체 때문에 [SUBS_RETRY] 예약이 항상 걸려
         // 있어서, 새 골의 이름이 그 예약이 풀릴 때까지 밀린다 — 그동안 보드는 이름 없이
         // 함성만 돈다. 상태 변화와 같은 자격으로 예약을 건너뛰게 한다.
-        val pending = latinPending.getOrPut(matchId) { ConcurrentHashMap.newKeySet() }
-        val newGoal = markUnnamedGoals(snapshot.goals, known, pending)
+        val newGoal = markUnnamedGoals(snapshot.goals, known, feed.latinPending)
 
         val due = statusShifted || newGoal || nextTry == null || nextTry.isBefore(Instant.now())
 
         if ((needsNames || needsTeams || needsClock || needsSubs) && due) {
-            fotMobRetryAfter[matchId] = Instant.now().plus(wait)
+            feed.fotMobRetryAfter = Instant.now().plus(wait)
             val fotMob = runCatching { fotMobLiveClient.fetchSnapshot(matchId) }
                 .onFailure { log.warn("⚠️ [Live] FotMob 보강 실패 (matchId={}): {}", matchId, it.message) }
                 .getOrNull()
@@ -324,23 +354,23 @@ class LiveMatchPoller(
             if (fotMob != null) {
                 known.putAll(pairLatinNames(snapshot.goals, fotMob.goals))
                 if (fotMob.homeTeam.isNotBlank() && fotMob.awayTeam.isNotBlank()) {
-                    latinLabels[matchId] = LatinLabels(fotMob.homeTeam, fotMob.awayTeam, fotMob.competition)
+                    feed.latinLabels = LatinLabels(fotMob.homeTeam, fotMob.awayTeam, fotMob.competition)
                 }
-                if (fotMob.substitutions.isNotEmpty()) substitutions[matchId] = fotMob.substitutions
+                if (fotMob.substitutions.isNotEmpty()) feed.substitutions = fotMob.substitutions
                 fotMob.periods?.let { fresh ->
                     if (fresh.secondHalfStarted != null && periods?.secondHalfStarted == null) {
                         log.info("ℹ️ [Live] 후반 시작 {} — 경기 시계 기준점 확보 (matchId={})",
                             fresh.secondHalfStarted, matchId)
                     }
-                    clockAnchors[matchId] = mergePeriods(clockAnchors[matchId], fresh)
+                    feed.clockAnchor = mergePeriods(feed.clockAnchor, fresh)
                 }
             }
         }
 
         return snapshot.copy(
             goals = snapshot.goals.map { it.copy(nameLatin = known[it.key]) },
-            substitutions = substitutions[matchId] ?: snapshot.substitutions,
-            periods = fillClockFromStatus(matchId, snapshot)
+            substitutions = feed.substitutions ?: snapshot.substitutions,
+            periods = fillClockFromStatus(matchId, feed, snapshot)
         )
     }
 
@@ -356,8 +386,8 @@ class LiveMatchPoller(
      *
      * FotMob 값이 나중에라도 오면 그쪽이 이긴다 — 여기서는 비어 있을 때만 채운다.
      */
-    private fun fillClockFromStatus(matchId: String, snapshot: LiveSnapshot): LivePeriods? {
-        val anchor = clockAnchors[matchId] ?: return null
+    private fun fillClockFromStatus(matchId: String, feed: MatchFeedState, snapshot: LiveSnapshot): LivePeriods? {
+        val anchor = feed.clockAnchor ?: return null
         // 전반 시작조차 모르면 메꿀 기준이 없다. 엉뚱한 시각을 지어내지 않는다
         if (anchor.firstHalfStarted == null) return anchor
 
@@ -365,7 +395,7 @@ class LiveMatchPoller(
 
         if (snapshot.halftime && anchor.firstHalfEnded == null) {
             val filled = anchor.copy(firstHalfEnded = now)
-            clockAnchors[matchId] = filled
+            feed.clockAnchor = filled
             log.info("ℹ️ [Live] 전반 종료를 네이버 상태로 잡았습니다 ({}) — FotMob 미제공 (matchId={})",
                 snapshot.status, matchId)
             return filled
@@ -377,7 +407,7 @@ class LiveMatchPoller(
             anchor.firstHalfEnded != null && anchor.secondHalfStarted == null
         ) {
             val filled = anchor.copy(secondHalfStarted = now)
-            clockAnchors[matchId] = filled
+            feed.clockAnchor = filled
             log.info("ℹ️ [Live] 후반 시작을 네이버 상태로 잡았습니다 — FotMob 미제공 (matchId={})", matchId)
             return filled
         }
@@ -396,35 +426,36 @@ class LiveMatchPoller(
      * 반대로 **매핑이 없을 때는 즉시** 내려간다: FotMob은 matchId를 그대로 쓰므로
      * 네이버 gameId를 못 찾은 것이 FotMob에게는 아무 장애도 아니다.
      */
-    private suspend fun fetchSnapshot(match: ActiveMatch, previous: LiveMatchState?): LiveSnapshot? {
+    private suspend fun fetchSnapshot(match: ActiveMatch, feed: MatchFeedState, previous: LiveMatchState?): LiveSnapshot? {
         val matchId = match.matchId
-        val onFotMob = fotMobUntil[matchId]?.isAfter(Instant.now()) == true
+        val onFotMob = feed.fotMobUntil?.isAfter(Instant.now()) == true
         val source = if (onFotMob) LiveSource.FOTMOB else LiveSource.NAVER
 
         if (!shouldPollNow(match, previous, source)) return null
         if (onFotMob) return fetchFotMob(matchId)
 
-        if (backoffUntil[matchId]?.isAfter(Instant.now()) == true) return null
+        if (feed.backoffUntil?.isAfter(Instant.now()) == true) return null
 
         val gameId = liveMatchMapper.resolveGameId(matchId, match.kickoff)
-            ?: return switchToFotMob(matchId, "네이버 gameId 매핑 없음")
+            ?: return switchToFotMob(matchId, feed, "네이버 gameId 매핑 없음")
 
         return try {
             naverSportsClient.fetchGame(gameId).toSnapshot().also {
-                failureCount.remove(matchId)
-                if (fotMobUntil.remove(matchId) != null) {
+                feed.failureCount = 0
+                if (feed.fotMobUntil != null) {
+                    feed.fotMobUntil = null
                     log.info("✅ [Live] 네이버가 회복되어 되돌아갑니다 (matchId={})", matchId)
                 }
             }
         } catch (e: NaverRateLimitException) {
             // 캐시 없이 원본을 직접 때리는 처지라 429는 즉시 크게 물러선다 (설계 5.4).
             // 우리를 막고 있는 상대를 계속 두드리는 것보다 예비 소스로 가는 편이 낫다
-            backoffUntil[matchId] = Instant.now().plus(RATE_LIMIT_BACKOFF)
-            switchToFotMob(matchId, "네이버 429")
+            feed.backoffUntil = Instant.now().plus(RATE_LIMIT_BACKOFF)
+            switchToFotMob(matchId, feed, "네이버 429")
         } catch (e: NaverSportsException) {
-            applyBackoff(matchId, e)
-            if ((failureCount[matchId] ?: 0) >= FAILURES_BEFORE_FALLBACK) {
-                switchToFotMob(matchId, "네이버 연속 실패 ${failureCount[matchId]}회")
+            applyBackoff(matchId, feed, e)
+            if (feed.failureCount >= FAILURES_BEFORE_FALLBACK) {
+                switchToFotMob(matchId, feed, "네이버 연속 실패 ${feed.failureCount}회")
             } else {
                 null
             }
@@ -432,8 +463,8 @@ class LiveMatchPoller(
     }
 
     /** 폴백으로 전환하고 이번 턴 값까지 받아 온다. FotMob도 실패하면 이번 턴은 빈손이다 */
-    private suspend fun switchToFotMob(matchId: String, reason: String): LiveSnapshot? {
-        fotMobUntil[matchId] = Instant.now().plus(FOTMOB_STICKY)
+    private suspend fun switchToFotMob(matchId: String, feed: MatchFeedState, reason: String): LiveSnapshot? {
+        feed.fotMobUntil = Instant.now().plus(FOTMOB_STICKY)
         log.warn(
             "⚠️ [Live] FotMob으로 폴백합니다 — {} (matchId={}). 선수 이름이 영문으로 바뀝니다",
             reason, matchId
@@ -512,13 +543,20 @@ class LiveMatchPoller(
         return Instant.now().isAfter(ended.plus(SETTLE_GRACE))
     }
 
-    private fun markSettledIfFinished(matchId: String, snapshot: LiveSnapshot) {
+    /**
+     * 종료를 처음 본 순간을 Redis에 찍고 대기열을 비운다.
+     *
+     * **여기서 상태를 통째로 버리지 않는다.** 종료 후에도 [SETTLE_GRACE](10분) 동안은 폴링이
+     * 계속 도는데, 시계 기준점/라틴 이름까지 지우면 그 구간의 스냅샷이 시계 없이 나간다.
+     * 기억을 놓는 곳은 폴링이 실제로 멈추는 지점([isSettled])이다.
+     */
+    private fun markSettledIfFinished(matchId: String, feed: MatchFeedState, snapshot: LiveSnapshot) {
         if (!snapshot.finished) return
         redis.opsForValue().setIfAbsent(
             LiveMatchKeys.end(matchId), Instant.now().toEpochMilli().toString(), LiveMatchKeys.LIVE_TTL
         )
-        feedBuffer.remove(matchId)
-        bufferedGoalKeys.remove(matchId)
+        synchronized(feed.feedBuffer) { feed.feedBuffer.clear() }
+        feed.bufferedGoalKeys = null
     }
 
     /**
@@ -559,20 +597,21 @@ class LiveMatchPoller(
      *
      * 새 골이 없는 스냅샷(시계 틱·교체)은 지금까지처럼 도착 시각부터 잰다.
      */
-    private fun takeDue(matchId: String, fresh: LiveSnapshot): LiveSnapshot? {
+    private fun takeDue(feed: MatchFeedState, fresh: LiveSnapshot): LiveSnapshot? {
         if (delaySeconds == 0L) return fresh
 
-        val queue = feedBuffer.getOrPut(matchId) { ArrayDeque() }
+        val queue = feed.feedBuffer
         synchronized(queue) {
             val now = Instant.now()
 
             // 첫 스냅샷은 "새 골"이 없는 것으로 친다. 폴링을 늦게 시작했거나 재시작한 직후라
             // 이미 들어가 있던 골까지 새 골로 보면, 그 골의 실제 시각(한참 전)이 기준이 되어
             // 대기열이 통째로 즉시 발행된다 — 시청자가 아직 못 본 장면까지 새어 나간다
-            val seen = bufferedGoalKeys.put(matchId, fresh.goals.mapTo(HashSet()) { it.key })
+            val seen = feed.bufferedGoalKeys
+            feed.bufferedGoalKeys = fresh.goals.mapTo(HashSet()) { it.key }
             val newGoals = if (seen == null) emptyList() else fresh.goals.filter { it.key !in seen }
 
-            queue.addLast(Buffered(releaseAnchor(now, newGoals, clockAnchors[matchId]), fresh))
+            queue.addLast(Buffered(releaseAnchor(now, newGoals, feed.clockAnchor), fresh))
 
             return drainDue(queue, now.minusSeconds(delaySeconds))
         }
@@ -761,16 +800,27 @@ class LiveMatchPoller(
             emptyList()
         }
         activeCachedAt = now
+
+        // 폴링 구간을 벗어난 경기의 기억을 놓는다.
+        //
+        // 정상 흐름에서는 [pollMatch]가 [isSettled] 시점에 지우지만, 소스가 끝내 "종료"를
+        // 안 주면 그 지점에 도달하지 못한다. 그런 경기도 킥오프 +3시간이면 목록에서 빠지므로
+        // 여기서 한 번 더 걷어낸다. 조회에 실패해 목록이 빈 턴에는 건드리지 않는다 —
+        // 진행 중인 경기의 기억을 DB 장애로 날릴 이유가 없다.
+        if (activeCache.isNotEmpty()) {
+            val live = activeCache.mapTo(HashSet()) { it.matchId }
+            states.keys.retainAll(live)
+        }
         return activeCache
     }
 
-    private fun applyBackoff(matchId: String, e: Exception) {
-        val failures = failureCount.merge(matchId, 1) { a, b -> a + b } ?: 1
+    private fun applyBackoff(matchId: String, feed: MatchFeedState, e: Exception) {
+        val failures = ++feed.failureCount
         val wait = minOf(
             BASE_BACKOFF.multipliedBy(1L shl minOf(failures - 1, MAX_BACKOFF_SHIFT)),
             MAX_BACKOFF
         )
-        backoffUntil[matchId] = Instant.now().plus(wait)
+        feed.backoffUntil = Instant.now().plus(wait)
         log.warn("⚠️ [Live] 조회 실패 {}회 — {}초 후 재시도 (matchId={}): {}", failures, wait.seconds, matchId, e.message)
     }
 
