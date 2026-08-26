@@ -3,7 +3,7 @@
 > 작성일: 2026-08-26
 > 대상: 백엔드 전체 — Kotlin 58파일 / 6,089줄 (테스트 11파일 / 2,600줄)
 > **동작은 바꾸지 않는다.** 패키지 구조와 계층 의존만 정리한다.
-> 진행: 0~3단계 완료 (2026-08-26) · 4단계 진행 중 — 4.5절
+> 진행: 0~4단계 완료 (2026-08-26). 4.3·4.5절에 실행 기록
 
 ## 0. 한 문장 요약
 
@@ -62,7 +62,7 @@ IDE 리팩토링으로 클래스를 옮기면 조용히 깨진다. 집계 투영
 |---|---|
 | 로깅 | SLF4J 10파일 / `println` 12파일. `println`은 레벨·타임스탬프가 없어 필터링·시각 조회 불가 |
 | 트랜잭션 | `@Transactional` 2파일뿐. 쓰기는 8개 서비스에 분산. `HeadlineService`는 저장+삭제가 비원자적 |
-| 외부 호출 | 타임아웃·재시도가 클래스마다 각자. Jsoup 연결 설정만 5곳 중복 |
+| 외부 호출 | 타임아웃·재시도가 클래스마다 각자. Jsoup 연결 설정 5곳 — **이 진단은 뒤에 틀린 것으로 밝혀졌다 (6.5절)** |
 
 ---
 
@@ -159,7 +159,7 @@ git rename 추적이 실패해 충돌 해소 비용이 급증한다.
 | 1 | 의존성 역전 해소 — `PlayerRatingAggregate` → 리포지토리 계층 | 남아 있으면 리포지토리를 옮길 수 없다 | ✅ `2a05ee7` |
 | 2 | DTO 위치 확정 + 엔티티 노출 차단 | **각 클래스의 목적지가 여기서 결정된다** | ✅ `5c505d0` `58ce654` |
 | 3 | 패키지 이동 | 이동과 import 수정만. 동작 변경 없음 | ✅ `3fd40e7` — 68파일 |
-| 4 | 도메인 내부 정리 | 배치 확정 후 내용 정리 | 진행 중 (4.5절) |
+| 4 | 도메인 내부 정리 | 배치 확정 후 내용 정리 | ✅ 5건 완료, 1건 접음 (4.5절) |
 
 2가 3보다 앞서지 않으면 같은 파일을 두 번 옮기게 된다.
 
@@ -199,14 +199,14 @@ com.atleti.news
 
 ### 4.5 4단계 항목
 
-| 대상 | 내용 |
-|---|---|
-| `LiveMatchPoller` | 경기별 상태 `ConcurrentHashMap` 12개 → 상태 클래스 1개. 현재 8개가 경기 종료 시 미정리 |
-| 채팅 Redis 키 | `ChatKeys`로 중앙화 — `LiveMatchKeys`와 동일 패턴 |
-| 로깅 | `println` 12파일 → SLF4J |
-| Jsoup | 연결 설정 5곳 → 공통 팩토리 |
-| 트랜잭션 | 서비스 메서드 단위 `@Transactional` 경계 |
-| `WebSocketConfig` | `setAllowedOriginPatterns("*")` 제한. "배포 전 제한 예정" 주석이 남아 있으나 **이미 배포됨** — 리팩토링이 아니라 보안 이슈 |
+| 대상 | 내용 | 결과 |
+|---|---|---|
+| `LiveMatchPoller` | 경기별 상태 `ConcurrentHashMap` 12개 → 상태 클래스 1개 | ✅ `e97172e` |
+| 채팅 Redis 키 | `ChatKeys`로 중앙화 — `LiveMatchKeys`와 동일 패턴 | ✅ `6cb0d6c` |
+| 트랜잭션 | 코루틴 안의 다중 쓰기에 경계 | ✅ `14ea5d4` |
+| `WebSocketConfig` | 허용 출처를 `"*"`에서 프론트 도메인으로 | ✅ `de5ca2e` |
+| 로깅 | `println` 57건 → SLF4J, 예외 25곳에 스택 추가 | ✅ `f1b4e6e` |
+| Jsoup | 연결 설정 공통화 | ❌ **접음** (6.5절) |
 
 ### 4.6 이동 커밋 규칙
 
@@ -260,7 +260,31 @@ diff는 경로 변경과 import로만 구성한다.
 
 `match/domain/FootballDataService.kt`에 선언돼 있으나 참조하는 곳이 없다.
 
-### 6.5 컨트롤러가 리포지토리를 직접 주입
+### 6.5 Jsoup 연결 설정 공통화 — 접기로 함
+
+1.2-④에 "Jsoup 연결 설정만 5곳 중복"이라고 적었는데, **진단이 틀렸다.** 실제로 까 보니
+대부분 의도된 차이였다.
+
+| 호출부 | 대상 | 왜 다른가 |
+|---|---|---|
+| `ScraperService` 목록(marca) | marca.com | `Accept-Language: es-ES` — 스페인 사이트 |
+| `ScraperService` 목록(as) | as.com | 위 + `referrer: as.com` |
+| `ScraperService` 본문 | as/marca | **`Sec-Ch-Ua` 계열 8개 추가** — WAF 회피용 브라우저 지문 |
+| `MatchScraperService` 개요 | FotMob | `Accept-Language: en-US`, `ignoreHttpErrors(true)`, `maxBodySize(0)` |
+| `MatchScraperService` 통계 | FotMob | UA 인라인 |
+
+진짜 중복은 `timeout(30000)` 다섯 곳과 UA 정도인데, UA조차 값이 다르다
+(`Chrome/125` vs `Chrome/124`) — 의도인지 실수인지 알 수 없다.
+
+**하지 않는 이유는 위험 대비 이득이다.** 2026-08-24 운영 로그에 이미
+`⚠️ [Scraper 403] as.com — WAF Blocked`가 찍히고 있다. 헤더나 UA를 통일하면 스크래핑
+성공률이 바뀔 수 있는데 **이 구간은 테스트가 0개**라 바뀐 것을 알 방법이 없다. 다음 배치까지
+모르고, 그때도 "원래 가끔 막혔다"와 구분되지 않는다.
+
+먼저 할 일은 통합이 아니라 3.3절의 **어댑터 분리**다. 스크래핑과 저장이 한 클래스에
+붙어 있는 한 이 영역에는 테스트를 붙일 수 없고, 테스트가 없는 한 여기를 건드리면 안 된다.
+
+### 6.6 컨트롤러가 리포지토리를 직접 주입
 
 `NewsController`가 서비스를 거치지 않고 리포지토리 3개(`NewsArticleRepository`,
 `NewsSourceRepository`, `CollectionLogRepository`)를 직접 받는다. 계층을 건너뛰는 구조다.
