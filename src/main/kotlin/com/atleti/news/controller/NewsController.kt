@@ -2,16 +2,21 @@ package com.atleti.news.controller
 
 import com.atleti.news.entity.ArticleType
 import com.atleti.news.entity.CollectionLog
+import com.atleti.news.entity.CollectionStatus
+import com.atleti.news.entity.NewsSource
 import com.atleti.news.entity.NewsArticle
 import com.atleti.news.repository.CollectionLogRepository
 import com.atleti.news.repository.NewsArticleRepository
+import com.atleti.news.repository.NewsSourceRepository
 import com.atleti.news.service.NewsPipelineService
+import com.atleti.news.service.ViewCountService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.web.bind.annotation.*
+import jakarta.servlet.http.HttpServletRequest
 import java.time.OffsetDateTime
 
 @Tag(name = "News API", description = "아틀레티코 뉴스 조회 및 관리 API")
@@ -19,9 +24,9 @@ import java.time.OffsetDateTime
 @RequestMapping("/api/news")
 class NewsController(
     private val newsArticleRepository: NewsArticleRepository,
-    private val newsSourceRepository: com.atleti.news.repository.NewsSourceRepository,
+    private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
-    private val viewCountService: com.atleti.news.service.ViewCountService,
+    private val viewCountService: ViewCountService,
     private val newsPipelineService: NewsPipelineService
 ) {
 
@@ -66,13 +71,13 @@ class NewsController(
 
     @Operation(summary = "수집 소스 목록 조회", description = "시스템에서 관리 중인 모든 뉴스 수집원 리스트를 가져옵니다.")
     @GetMapping("/sources")
-    fun getSources(): List<com.atleti.news.entity.NewsSource> {
-        return newsSourceRepository.findAllByIsActiveTrue()
+    fun getSources(): List<NewsSourceResponse> {
+        return newsSourceRepository.findAllByIsActiveTrue().map { NewsSourceResponse.of(it) }
     }
 
     @Operation(summary = "뉴스 상세 조회 (전체 포함)", description = "특정 기사의 상세 정보(이미지, 본문 포함)를 가져옵니다.")
     @GetMapping("/{id}")
-    fun getNewsDetail(@PathVariable id: Long, request: jakarta.servlet.http.HttpServletRequest): NewsDetailResponse {
+    fun getNewsDetail(@PathVariable id: Long, request: HttpServletRequest): NewsDetailResponse {
         val article = newsArticleRepository.findById(id)
             .orElseThrow { NoSuchElementException("해당 기사를 찾을 수 없습니다. ID: $id") }
         
@@ -106,15 +111,77 @@ class NewsController(
     fun getLogs(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "10") size: Int
-    ): Page<CollectionLog> {
+    ): Page<CollectionLogResponse> {
         val pageable = PageRequest.of(page, size, Sort.by("createdAt").descending())
-        return collectionLogRepository.findAll(pageable)
+        return collectionLogRepository.findAll(pageable).map { CollectionLogResponse.of(it) }
     }
 
     @Operation(summary = "배치 수동 실행", description = "뉴스 수집 파이프라인을 즉시 실행합니다.")
     @PostMapping("/trigger")
     fun triggerPipeline() {
         newsPipelineService.runPipeline()
+    }
+}
+
+/**
+ * 수집 소스 응답 DTO.
+ *
+ * 이전에는 [NewsSource] 엔티티를 그대로 직렬화했다. 그러면 컬럼을 추가하거나 이름을 바꾸는
+ * 순간 API 응답이 같이 바뀌어, **스키마 변경이 곧 API 계약 변경**이 된다
+ * (docs/architecture.md 1.2-③).
+ *
+ * 필드 구성은 엔티티와 1:1이다. 지금 프론트가 이 모양에 의존하고 있어 형태를 바꾸지 않는다 —
+ * 목적은 모양을 줄이는 게 아니라 **엔티티와 응답을 끊어 두는 것**이다.
+ * 두 JSON이 같다는 것은 `NewsResponseContractTest`가 고정한다.
+ */
+data class NewsSourceResponse(
+    val id: Long?,
+    val internalId: String,
+    val displayName: String,
+    val sourceUrl: String?,
+    val iconUrl: String?,
+    val category: String,
+    val isActive: Boolean
+) {
+    companion object {
+        fun of(e: NewsSource) = NewsSourceResponse(
+            id = e.id,
+            internalId = e.internalId,
+            displayName = e.displayName,
+            sourceUrl = e.sourceUrl,
+            iconUrl = e.iconUrl,
+            category = e.category,
+            isActive = e.isActive
+        )
+    }
+}
+
+/**
+ * 수집 로그 응답 DTO. [NewsSourceResponse]와 같은 이유로 [CollectionLog] 엔티티를 대신한다.
+ */
+data class CollectionLogResponse(
+    val id: Long?,
+    val status: CollectionStatus,
+    val scannedCount: Int,
+    val aiProcessedCount: Int,
+    val twitterApiCallCount: Int,
+    val footballApiCallCount: Int,
+    val errorMsg: String?,
+    val executionTimeMs: Long,
+    val createdAt: OffsetDateTime
+) {
+    companion object {
+        fun of(e: CollectionLog) = CollectionLogResponse(
+            id = e.id,
+            status = e.status,
+            scannedCount = e.scannedCount,
+            aiProcessedCount = e.aiProcessedCount,
+            twitterApiCallCount = e.twitterApiCallCount,
+            footballApiCallCount = e.footballApiCallCount,
+            errorMsg = e.errorMsg,
+            executionTimeMs = e.executionTimeMs,
+            createdAt = e.createdAt
+        )
     }
 }
 

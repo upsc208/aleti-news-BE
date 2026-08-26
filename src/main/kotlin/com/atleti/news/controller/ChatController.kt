@@ -5,6 +5,7 @@ import com.atleti.news.config.ClientIp
 import com.atleti.news.dto.ChatMessage
 import com.atleti.news.dto.LiveMatchState
 import com.atleti.news.service.ChatException
+import com.atleti.news.service.ChatPresenceTracker
 import com.atleti.news.service.ChatService
 import org.springframework.messaging.handler.annotation.DestinationVariable
 import org.springframework.messaging.handler.annotation.MessageExceptionHandler
@@ -36,7 +37,7 @@ data class NicknameResponse(val nickname: String, val status: String = "RESERVED
 @Controller
 class ChatController(
     private val chatService: ChatService,
-    private val presenceTracker: com.atleti.news.service.ChatPresenceTracker
+    private val presenceTracker: ChatPresenceTracker
 ) {
 
     /**
