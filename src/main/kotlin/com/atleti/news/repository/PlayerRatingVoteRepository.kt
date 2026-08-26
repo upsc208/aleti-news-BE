@@ -1,7 +1,6 @@
 package com.atleti.news.repository
 
 import com.atleti.news.entity.PlayerRatingVote
-import com.atleti.news.service.PlayerRatingAggregate
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
@@ -18,7 +17,7 @@ interface PlayerRatingVoteRepository : JpaRepository<PlayerRatingVote, Long> {
 
     // 선수별 합계/투표수 실시간 집계 (평균은 서비스에서 계산 — DB별 AVG 반환 타입 이슈 회피)
     @Query("""
-        SELECT new com.atleti.news.service.PlayerRatingAggregate(v.playerName, SUM(v.score), COUNT(v))
+        SELECT new com.atleti.news.repository.PlayerRatingAggregate(v.playerName, SUM(v.score), COUNT(v))
         FROM PlayerRatingVote v
         WHERE v.matchId = :matchId
         GROUP BY v.playerName

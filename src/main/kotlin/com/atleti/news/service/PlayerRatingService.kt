@@ -98,11 +98,6 @@ class PlayerRatingService(
     }
 }
 
-// JPQL 집계 결과 매핑용 (합계/투표수 → 평균은 계산)
-data class PlayerRatingAggregate(val playerName: String, val sumScore: Long, val voteCount: Long) {
-    fun average(): Double = if (voteCount > 0) Math.round(sumScore.toDouble() / voteCount * 10.0) / 10.0 else 0.0
-}
-
 // 응답 DTO
 data class PlayerRatingResponse(
     val playerName: String,
