@@ -1,7 +1,7 @@
 package com.atleti.news.chat
 
-import com.atleti.news.config.ChatClient
-import com.atleti.news.service.ChatService
+import com.atleti.news.chat.infra.ChatClient
+import com.atleti.news.chat.domain.ChatService
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.AfterEach
