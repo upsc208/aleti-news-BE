@@ -1,5 +1,6 @@
 package com.atleti.news.news.external
 
+import org.slf4j.LoggerFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
@@ -8,6 +9,8 @@ import com.atleti.news.news.domain.ArticleType
 
 @Service
 class NitterScraperService {
+    private val log = LoggerFactory.getLogger(NitterScraperService::class.java)
+
     // Fail-over를 위한 인스턴스 리스트 (비교적 안정적인 곳 위주)
     private val nitterInstances = listOf(
         "https://nitter.poast.org",
@@ -25,10 +28,10 @@ class NitterScraperService {
                 if (results.isNotEmpty()) {
                     return results
                 } else {
-                    println("ℹ️ Nitter 인스턴스 ($instance): 결과가 비어있습니다. 다음 인스턴스로 시도합니다.")
+                    log.info("ℹ️ Nitter 인스턴스 ($instance): 결과가 비어있습니다. 다음 인스턴스로 시도합니다.")
                 }
             } catch (e: Exception) {
-                println("❌ Nitter 인스턴스 실패 ($instance): ${e.message}. 다음 인스턴스로 시도합니다.")
+                log.error("❌ Nitter 인스턴스 실패 ($instance): ${e.message}. 다음 인스턴스로 시도합니다.", e)
                 continue
             }
         }

@@ -1,5 +1,6 @@
 package com.atleti.news.chat.domain
 
+import org.slf4j.LoggerFactory
 import com.atleti.news.chat.infra.ChatClient
 import com.atleti.news.common.ClientIp
 import com.atleti.news.live.domain.LiveMatchState
@@ -58,6 +59,8 @@ class ChatService(
     @Value("\${atleti.chat.always-open}") private val alwaysOpen: Boolean,
     @Value("\${atleti.chat.ip-salt}") private val ipSalt: String
 ) {
+    private val log = LoggerFactory.getLogger(ChatService::class.java)
+
     companion object {
         const val CHANNEL = "chat.messages"   // Pub/Sub 채널 (단일 채널, 페이로드에 matchId 포함)
 
@@ -186,7 +189,7 @@ class ChatService(
             redis.opsForValue().get(LiveMatchKeys.state(matchId))
                 ?.let { objectMapper.readValue(it, LiveMatchState::class.java) }
         } catch (e: Exception) {
-            println("⚠️ [Live] 스냅샷 조회 실패 (matchId=$matchId): ${e.message}")
+            log.warn("⚠️ [Live] 스냅샷 조회 실패 (matchId=$matchId): ${e.message}", e)
             null
         }
     }
@@ -216,7 +219,7 @@ class ChatService(
                 .mapNotNull { runCatching { objectMapper.readValue(it, ChatMessage::class.java) }.getOrNull() }
                 .reversed()
         } catch (e: Exception) {
-            println("⚠️ [Chat] 최근 메시지 조회 실패 (matchId=$matchId): ${e.message}")
+            log.warn("⚠️ [Chat] 최근 메시지 조회 실패 (matchId=$matchId): ${e.message}", e)
             emptyList()
         }
 

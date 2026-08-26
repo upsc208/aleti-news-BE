@@ -1,5 +1,6 @@
 package com.atleti.news.match.domain
 
+import org.slf4j.LoggerFactory
 import com.atleti.news.news.domain.CollectionLog
 import com.atleti.news.news.domain.CollectionStatus
 import com.atleti.news.news.domain.CollectionLogRepository
@@ -24,6 +25,8 @@ class FootballDataService(
     private val transactionTemplate: TransactionTemplate,
     private val objectMapper: ObjectMapper
 ) {
+    private val log = LoggerFactory.getLogger(FootballDataService::class.java)
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val UPCOMING_LIMIT = 3
@@ -48,7 +51,7 @@ class FootballDataService(
         // 비어 있거나 전부 지난 경기뿐이면 즉시 갱신을 시도한다 (쿨다운 내에는 재시도하지 않음)
         if (claimRefreshSlot()) {
             runCatching { updateUpcomingMatches() }
-                .onFailure { println("❌ [FotMob] 향후 일정 동기화 실패: ${it.message}") }
+                .onFailure { log.error("❌ [FotMob] 향후 일정 동기화 실패: ${it.message}", it) }
         }
         return loadFreshUpcoming().map { mapToUpcomingMatch(it) }
     }
@@ -75,7 +78,7 @@ class FootballDataService(
                 saveLog(CollectionStatus.SUCCESS, startTime, 0)
             } catch (e: Exception) {
                 // 예전에는 예외가 갱신 함수 안에서 삼켜져 실패해도 SUCCESS로 기록됐다
-                println("❌ [FotMob] 예정 경기 갱신 실패: ${e.message}")
+                log.error("❌ [FotMob] 예정 경기 갱신 실패: ${e.message}", e)
                 saveLog(CollectionStatus.FAIL, startTime, 0, e.message)
             }
         }
@@ -106,7 +109,7 @@ class FootballDataService(
                 upcomingMatchRepository.saveAll(fresh)
             }
         }
-        println("✅ [FotMob] 향후 일정 ${fresh.size}건 갱신 완료")
+        log.info("✅ [FotMob] 향후 일정 ${fresh.size}건 갱신 완료")
         return fresh.size
     }
 

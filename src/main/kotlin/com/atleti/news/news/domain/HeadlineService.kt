@@ -1,5 +1,6 @@
 package com.atleti.news.news.domain
 
+import org.slf4j.LoggerFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.springframework.data.domain.PageRequest
@@ -16,6 +17,8 @@ class HeadlineService(
     private val newsHeadlineRepository: NewsHeadlineRepository,
     private val transactionTemplate: TransactionTemplate
 ) {
+    private val log = LoggerFactory.getLogger(HeadlineService::class.java)
+
     companion object {
         private const val MAX_HEADLINES = 5          // DB에 유지할 최대 헤드라인 수 (롤링)
         private const val MAX_PER_RUN = 4            // 한 스케줄에 새로 올릴 최대 개수 (중요도 기준, 꼭 4개는 아님)
@@ -49,7 +52,7 @@ class HeadlineService(
             }
         }
         if (newsLines.isEmpty()) {
-            println("📰 [헤드라인] 신규 기사 없음(since=$since) → 생성 생략")
+            log.info("📰 [헤드라인] 신규 기사 없음(since=$since) → 생성 생략")
             return@withContext
         }
 
@@ -58,7 +61,7 @@ class HeadlineService(
 
         val generated = geminiService.generateHeadlines(newsLines, existing)
         if (generated == null) {
-            println("❌ [헤드라인] 생성 실패")
+            log.error("❌ [헤드라인] 생성 실패")
             return@withContext
         }
 
@@ -70,7 +73,7 @@ class HeadlineService(
             .take(MAX_PER_RUN)
 
         if (fresh.isEmpty()) {
-            println("📰 [헤드라인] 중요한 신규 헤드라인 없음 → 추가 생략")
+            log.info("📰 [헤드라인] 중요한 신규 헤드라인 없음 → 추가 생략")
             return@withContext
         }
 
@@ -92,7 +95,7 @@ class HeadlineService(
                 deleted = toDelete.size
             }
         }
-        println("✅ [헤드라인] ${fresh.size}개 등록: ${fresh.joinToString(" | ")}")
-        if (deleted > 0) println("🧹 [헤드라인] 오래된 ${deleted}개 삭제 (최신 ${MAX_HEADLINES}개 유지)")
+        log.info("✅ [헤드라인] ${fresh.size}개 등록: ${fresh.joinToString(" | ")}")
+        if (deleted > 0) log.info("🧹 [헤드라인] 오래된 ${deleted}개 삭제 (최신 ${MAX_HEADLINES}개 유지)")
     }
 }

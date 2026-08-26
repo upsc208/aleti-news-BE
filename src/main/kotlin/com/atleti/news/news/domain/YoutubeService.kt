@@ -1,5 +1,6 @@
 package com.atleti.news.news.domain
 
+import org.slf4j.LoggerFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
@@ -21,6 +22,8 @@ class YoutubeService(
     private val newsArticleRepository: NewsArticleRepository,
     @Value("\${serpapi.key}") private val serpApiKey: String
 ) {
+    private val log = LoggerFactory.getLogger(YoutubeService::class.java)
+
     // 3시간 분량 자막은 기본 버퍼 크기(256KB)를 초과하므로 제한을 늘림 (약 10MB)
     private val webClient = WebClient.builder()
         .exchangeStrategies(ExchangeStrategies.builder()
@@ -32,7 +35,7 @@ class YoutubeService(
 
     suspend fun runYoutubePipeline(channelId: String = "@rubenuriagonzalez") {
         if (serpApiKey == "NO_KEY" || serpApiKey.isBlank()) {
-            println("⚠️ SERPAPI_KEY가 설정되지 않았습니다.")
+            log.warn("⚠️ SERPAPI_KEY가 설정되지 않았습니다.")
             return
         }
 
@@ -47,12 +50,12 @@ class YoutubeService(
             return
         }
 
-        println("🚀 새 라이브 방송 발견! 트랜스크립트 추출 시작: $videoUrl ($relativeDate)")
+        log.info("🚀 새 라이브 방송 발견! 트랜스크립트 추출 시작: $videoUrl ($relativeDate)")
         
         // 3. 진짜 새 영상일 때만 SerpApi 호출 (자막 추출용 쿼터 1회 소모)
         val transcript = fetchTranscript(videoId)
         if (transcript.isNullOrBlank()) {
-            println("⚠️ 트랜스크립트가 비어있거나 아직 생성되지 않았습니다.")
+            log.warn("⚠️ 트랜스크립트가 비어있거나 아직 생성되지 않았습니다.")
             return
         }
 
@@ -60,7 +63,7 @@ class YoutubeService(
         val calculatedTime = parseToSpainTime(relativeDate)
         val spainDateStr = "${calculatedTime.monthValue}월 ${calculatedTime.dayOfMonth}일"
         
-        println("🤖 Gemini 요약 및 번역 시작... (스페인 날짜 기준: $spainDateStr)")
+        log.info("🤖 Gemini 요약 및 번역 시작... (스페인 날짜 기준: $spainDateStr)")
         val youtubeResult = geminiService.processYoutubeTranscript(transcript, "YouTube: Ruben Uria", spainDateStr)
         
         if (youtubeResult != null && youtubeResult.isAtmRelated) {
@@ -79,7 +82,7 @@ class YoutubeService(
                 publishedAt = calculatedTime
             )
             newsArticleRepository.save(article)
-            println("✅ 라이브 요약 리포트 저장 완료: ${youtubeResult.titleKo}")
+            log.info("✅ 라이브 요약 리포트 저장 완료: ${youtubeResult.titleKo}")
         }
     }
 
@@ -107,7 +110,7 @@ class YoutubeService(
                 videoId to relativeDate
             } else null
         } catch (e: Exception) {
-            println("❌ 유튜브 라이브 탭 스크래핑 실패: ${e.message}")
+            log.error("❌ 유튜브 라이브 탭 스크래핑 실패: ${e.message}", e)
             null
         }
     }
@@ -140,7 +143,7 @@ class YoutubeService(
             val transcriptArray = response["transcript"] as? List<Map<String, Any>>
             transcriptArray?.joinToString(" ") { it["snippet"] as String }
         } catch (e: Exception) {
-            println("❌ 트랜스크립트 추출 실패: ${e.message}")
+            log.error("❌ 트랜스크립트 추출 실패: ${e.message}", e)
             null
         }
     }

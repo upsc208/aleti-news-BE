@@ -1,5 +1,6 @@
 package com.atleti.news.news.domain
 
+import org.slf4j.LoggerFactory
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -32,6 +33,8 @@ class NewsPipelineService(
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.enabled.headline}") private val isHeadlineEnabled: Boolean,
     @org.springframework.beans.factory.annotation.Value("\${rapidapi.daily.limit}") private val twitterDailyLimit: Int
     ) {
+    private val log = LoggerFactory.getLogger(NewsPipelineService::class.java)
+
     private val keywords = keywordString.split(",").map { it.trim().lowercase() }
 
     // 고정 15분 간격 스케줄러 (24시간 내내)
@@ -42,7 +45,7 @@ class NewsPipelineService(
     @Scheduled(cron = "0 5 * * * *")
     fun scheduledYoutubePipeline() = runBlocking {
         if (!isYoutubeEnabled) return@runBlocking
-        println("📺 유튜브 파이프라인 시작...")
+        log.info("📺 유튜브 파이프라인 시작...")
         youtubeService.runYoutubePipeline("@rubenuriagonzalez")
     }
 
@@ -51,7 +54,7 @@ class NewsPipelineService(
     @Scheduled(cron = "0 30 0/6 * * *")
     fun scheduledHeadlinePipeline() = runBlocking {
         if (!isHeadlineEnabled) return@runBlocking
-        println("📰 헤드라인 파이프라인 시작...")
+        log.info("📰 헤드라인 파이프라인 시작...")
         headlineService.generateAndStore()
     }
 
@@ -72,7 +75,7 @@ class NewsPipelineService(
                 val mediaSources = activeSources.filter { it.category == "MEDIA" }
                 
                 val initialTwitterUsage = if (isTwitterEnabled) twitterApiService.getTodayApiUsage() else 0
-                println("🚀 파이프라인 시작 (Twitter: $isTwitterEnabled, 오늘 Twitter API 사용: $initialTwitterUsage/$twitterDailyLimit)")
+                log.info("🚀 파이프라인 시작 (Twitter: $isTwitterEnabled, 오늘 Twitter API 사용: $initialTwitterUsage/$twitterDailyLimit)")
 
                 val deferredArticles = mutableListOf<Deferred<List<ScrapedArticle>>>()
 
@@ -104,7 +107,7 @@ class NewsPipelineService(
                                     tweets = twitterApiService.getTweets(username)
                                     if (tweets.isNotEmpty()) twitterApiCallCount.incrementAndGet()
                                 } catch (e: Exception) {
-                                    println("❌ [RapidAPI] @$username 오류: ${e.message}")
+                                    log.error("❌ [RapidAPI] @$username 오류: ${e.message}", e)
                                 }
                             }
                             tweets
@@ -126,7 +129,7 @@ class NewsPipelineService(
             }
             saveLog(CollectionStatus.SUCCESS, scannedCount.get(), aiProcessedCount.get(), twitterApiCallCount.get(), startTime)
         } catch (e: Exception) {
-            println("❌ 파이프라인 중단: ${e.message}")
+            log.error("❌ 파이프라인 중단: ${e.message}", e)
             saveLog(CollectionStatus.FAIL, scannedCount.get(), aiProcessedCount.get(), twitterApiCallCount.get(), startTime, e.message)
         }
     }
@@ -190,7 +193,7 @@ class NewsPipelineService(
                 )
                 aiProcessedCount.incrementAndGet()
             } catch (e: Exception) {
-                println("❌ 저장 실패: ${e.message}")
+                log.error("❌ 저장 실패: ${e.message}", e)
             }
         }
     }

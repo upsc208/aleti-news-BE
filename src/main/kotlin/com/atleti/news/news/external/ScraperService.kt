@@ -1,5 +1,6 @@
 package com.atleti.news.news.external
 
+import org.slf4j.LoggerFactory
 import com.atleti.news.news.domain.ArticleType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -9,6 +10,8 @@ import java.time.OffsetDateTime
 
 @Service
 class ScraperService {
+    private val log = LoggerFactory.getLogger(ScraperService::class.java)
+
 
     private val commonUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
@@ -44,10 +47,10 @@ class ScraperService {
                     null
                 }
             }
-            println("✅ [Marca Scrape] ${articles.size} articles found.")
+            log.info("✅ [Marca Scrape] ${articles.size} articles found.")
             articles
         } catch (e: Exception) {
-            println("❌ [Marca Scrape] Failed: ${e.message}")
+            log.error("❌ [Marca Scrape] Failed: ${e.message}", e)
             emptyList()
         }
     }
@@ -86,10 +89,10 @@ class ScraperService {
                     null
                 }
             }
-            println("✅ [AS Scrape] ${articles.size} articles found.")
+            log.info("✅ [AS Scrape] ${articles.size} articles found.")
             articles
         } catch (e: Exception) {
-            println("❌ [AS Scrape] Failed: ${e.message}")
+            log.error("❌ [AS Scrape] Failed: ${e.message}", e)
             emptyList()
         }
     }
@@ -124,7 +127,7 @@ class ScraperService {
                 val status = response.statusCode()
 
                 if (status == 403) {
-                    println("⚠️ [Scraper 403] $url - Access denied (WAF Blocked). Retry $retry/2...")
+                    log.warn("⚠️ [Scraper 403] $url - Access denied (WAF Blocked). Retry $retry/2...")
                     continue // 재시도
                 }
 
@@ -167,11 +170,11 @@ class ScraperService {
 
             } catch (e: Exception) {
                 lastException = e
-                println("⚠️ [Scraper Retry] 상세 정보 추출 시도 중 오류 ($url): ${e.message}. Retry $retry/2...")
+                log.warn("⚠️ [Scraper Retry] 상세 정보 추출 시도 중 오류 ($url): ${e.message}. Retry $retry/2...", e)
             }
         }
 
-        println("❌ 상세 정보 최종 추출 실패 ($url): ${lastException?.message}")
+        log.error("❌ 상세 정보 최종 추출 실패 ($url): ${lastException?.message}")
         return@withContext ArticleDetail(content = "", authorName = "Unknown", publishedAt = OffsetDateTime.now(SEOUL_ZONE), imageUrl = null)
     }
 }

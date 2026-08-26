@@ -1,5 +1,6 @@
 package com.atleti.news.news.external
 
+import org.slf4j.LoggerFactory
 import com.atleti.news.news.domain.CollectionLogRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,6 +24,8 @@ class TwitterApiService(
     @Value("\${rapidapi.twitter.host}") private val apiHost: String,
     @Value("\${rapidapi.daily.limit}") private val dailyLimit: Int
 ) {
+    private val log = LoggerFactory.getLogger(TwitterApiService::class.java)
+
     private val httpClient = HttpClient.newBuilder().build()
 
     // 오늘 사용한 API 호출 횟수 확인
@@ -34,7 +37,7 @@ class TwitterApiService(
     suspend fun getTweets(username: String): List<ScrapedArticle> = withContext(Dispatchers.IO) {
         val currentUsage = getTodayApiUsage()
         if (currentUsage >= dailyLimit) {
-            println("⚠️ [RapidAPI] 일일 호출 제한($dailyLimit)에 도달하여 호출을 중단합니다. (현재 사용: $currentUsage)")
+            log.warn("⚠️ [RapidAPI] 일일 호출 제한($dailyLimit)에 도달하여 호출을 중단합니다. (현재 사용: $currentUsage)")
             return@withContext emptyList()
         }
 
@@ -51,16 +54,16 @@ class TwitterApiService(
             
             if (response.statusCode() == 200) {
                 val responseBody = response.body()
-                println("DEBUG [RapidAPI] Response Body: ${responseBody.take(200)}...")
+                log.debug("DEBUG [RapidAPI] Response Body: ${responseBody.take(200)}...")
                 val articles = parseTweets(responseBody, username)
-                println("✅ [RapidAPI] @$username 트윗 수집 완료: ${articles.size}개 발견")
+                log.info("✅ [RapidAPI] @$username 트윗 수집 완료: ${articles.size}개 발견")
                 articles
             } else {
-                println("❌ [RapidAPI] 오류 발생: ${response.statusCode()} - ${response.body()}")
+                log.error("❌ [RapidAPI] 오류 발생: ${response.statusCode()} - ${response.body()}")
                 emptyList()
             }
         } catch (e: Exception) {
-            println("❌ [RapidAPI] 호출 중 예외 발생: ${e.message}")
+            log.error("❌ [RapidAPI] 호출 중 예외 발생: ${e.message}", e)
             emptyList()
         }
     }
@@ -76,7 +79,7 @@ class TwitterApiService(
             try {
                 org.json.JSONArray(jsonBody)
             } catch (e2: Exception) {
-                println("⚠️ [RapidAPI] JSON 파싱 실패: ${e2.message}")
+                log.warn("⚠️ [RapidAPI] JSON 파싱 실패: ${e2.message}", e2)
                 return emptyList()
             }
         }
@@ -112,7 +115,7 @@ class TwitterApiService(
 
             if (text.isNotBlank() && tweetId.isNotBlank()) {
                 val fullUrl = "https://x.com/$username/status/$tweetId"
-                println("DEBUG [Twitter Scraper] Found Tweet: $fullUrl | Time: $publishedAt${if (isRetweet) " | RT" else ""}")
+                log.debug("DEBUG [Twitter Scraper] Found Tweet: $fullUrl | Time: $publishedAt${if (isRetweet) " | RT" else ""}")
                 articles.add(
                     ScrapedArticle(
                         title = text,

@@ -1,5 +1,6 @@
 package com.atleti.news.news.external
 
+import org.slf4j.LoggerFactory
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
@@ -15,12 +16,14 @@ class GeminiService(
     @Value("\${gemini.api.key}") private val rawApiKey: String,
     private val objectMapper: ObjectMapper
 ) {
+    private val log = LoggerFactory.getLogger(GeminiService::class.java)
+
     private val apiKey = rawApiKey.trim()
     private val webClient = WebClient.builder().build()
 
     suspend fun processArticle(title: String, fullContent: String, sourceName: String, skipValidation: Boolean = false): GeminiResponse? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
-            println("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
+            log.warn("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
             return null
         }
 
@@ -29,7 +32,7 @@ class GeminiService(
 
     suspend fun processYoutubeTranscript(transcript: String, sourceName: String, spainDate: String): GeminiResponse? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
-            println("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
+            log.warn("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
             return null
         }
 
@@ -147,7 +150,7 @@ class GeminiService(
                 .awaitBody<Map<String, Any>>()
                 .let { parseGeminiResponse(it) }
         } catch (e: Exception) {
-            println("❌ Gemini 유튜브 처리 오류: ${e.message}")
+            log.error("❌ Gemini 유튜브 처리 오류: ${e.message}", e)
             null
         }
     }
@@ -155,7 +158,7 @@ class GeminiService(
     // 여러 최신 뉴스를 종합해 헤드라인 0~2개를 생성 (뉴스 헤드라인/속보 형태)
     suspend fun generateHeadlines(newsLines: List<String>, existingHeadlines: List<String>): List<String>? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
-            println("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
+            log.warn("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
             return null
         }
         if (newsLines.isEmpty()) return emptyList()
@@ -213,7 +216,7 @@ class GeminiService(
                 .awaitBody<Map<String, Any>>()
                 .let { parseHeadlineResponse(it) }
         } catch (e: Exception) {
-            println("❌ Gemini 헤드라인 생성 오류: ${e.message}")
+            log.error("❌ Gemini 헤드라인 생성 오류: ${e.message}", e)
             null
         }
     }
@@ -232,7 +235,7 @@ class GeminiService(
 
             objectMapper.readValue<HeadlineResponse>(cleanJson).headlines
         } catch (e: Exception) {
-            println("⚠️ 헤드라인 JSON 파싱 실패: ${e.message}")
+            log.warn("⚠️ 헤드라인 JSON 파싱 실패: ${e.message}", e)
             null
         }
     }
@@ -351,20 +354,20 @@ class GeminiService(
         } catch (e: WebClientResponseException) {
             if (e.statusCode.value() == 429 && retryCount < 2) {
                 val backoff = (retryCount + 1) * 10000L
-                println("⚠️ [Gemini 429] 할당량 초과. ${backoff/1000}초 대기 후 재시도 (${retryCount + 1}/2)...")
+                log.warn("⚠️ [Gemini 429] 할당량 초과. ${backoff/1000}초 대기 후 재시도 (${retryCount + 1}/2)...")
                 delay(backoff)
                 return callGeminiApi(title, fullContent, sourceName, retryCount + 1, skipValidation)
             } else if ((e.statusCode.value() == 503 || e.statusCode.value() == 500) && retryCount < 3) {
                 val backoff = (retryCount + 1) * 2000L
-                println("⚠️ [Gemini ${e.statusCode.value()}] 서버 바쁨. ${backoff/1000}초 대기 후 재시도 (${retryCount + 1}/3)...")
+                log.warn("⚠️ [Gemini ${e.statusCode.value()}] 서버 바쁨. ${backoff/1000}초 대기 후 재시도 (${retryCount + 1}/3)...", e)
                 delay(backoff)
                 return callGeminiApi(title, fullContent, sourceName, retryCount + 1, skipValidation)
             }
 
-            println("❌ Gemini API HTTP 에러 (${e.statusCode}): ${e.responseBodyAsString}")
+            log.error("❌ Gemini API HTTP 에러 (${e.statusCode}): ${e.responseBodyAsString}", e)
             null
         } catch (e: Exception) {
-            println("❌ Gemini 오류: ${e.message}")
+            log.error("❌ Gemini 오류: ${e.message}", e)
             null
         }
     }
@@ -383,7 +386,7 @@ class GeminiService(
 
             objectMapper.readValue<GeminiResponse>(cleanJson)
         } catch (e: Exception) {
-            println("⚠️ JSON 파싱 실패: ${e.message}")
+            log.warn("⚠️ JSON 파싱 실패: ${e.message}", e)
             null
         }
     }

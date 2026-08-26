@@ -1,5 +1,6 @@
 package com.atleti.news.match.external
 
+import org.slf4j.LoggerFactory
 import com.atleti.news.match.domain.MatchResult
 import com.atleti.news.match.domain.UpcomingMatch
 import com.atleti.news.match.domain.MatchResultRepository
@@ -28,6 +29,8 @@ class MatchScraperService(
     // 기본값은 실제 FotMob. 로컬 리허설에서만 가짜 서버로 돌린다 (scripts/fake-live-match.js)
     @Value("\${atleti.source.fotmob-base-url}") private val fotmobBaseUrl: String
 ) {
+    private val log = LoggerFactory.getLogger(MatchScraperService::class.java)
+
     private val ATLETI_TEAM_ID = "9906"
     private val FOTMOB_URL = "$fotmobBaseUrl/teams/$ATLETI_TEAM_ID/overview/atletico-madrid"
     private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -41,7 +44,7 @@ class MatchScraperService(
             }
             null
         } catch (e: Exception) {
-            println("❌ [FotMob Scrape] 실패: ${e.message}")
+            log.error("❌ [FotMob Scrape] 실패: ${e.message}", e)
             null
         }
     }
@@ -95,7 +98,7 @@ class MatchScraperService(
 
                 if (response.statusCode() != 200) {
                     lastError = FotMobScrapeException("HTTP ${response.statusCode()}")
-                    println("⚠️ [FotMob] HTTP ${response.statusCode()} - 재시도 $retry/2")
+                    log.warn("⚠️ [FotMob] HTTP ${response.statusCode()} - 재시도 $retry/2")
                     delay(2000)
                     continue
                 }
@@ -119,7 +122,7 @@ class MatchScraperService(
                 throw e
             } catch (e: Exception) {
                 lastError = e
-                println("⚠️ [FotMob] 접속 실패 (재시도 $retry/2): ${e.message}")
+                log.warn("⚠️ [FotMob] 접속 실패 (재시도 $retry/2): ${e.message}", e)
                 delay(2000)
             }
         }
@@ -179,7 +182,7 @@ class MatchScraperService(
             homeFormation = stats["homeFormation"], awayFormation = stats["awayFormation"]
         )
 
-        println("✅ [FotMob Scrape] 데이터 저장 시도: $homeTeam vs $awayTeam ($kstTimeStr)")
+        log.info("✅ [FotMob Scrape] 데이터 저장 시도: $homeTeam vs $awayTeam ($kstTimeStr)")
 
         // 같은 경기를 지우고 새로 넣는다. 한 트랜잭션으로 묶지 않으면 중간 실패 시
         // **최근 경기 기록이 통째로 사라진 상태**가 남는다 — 화면의 직전 경기 카드가 빈다.
@@ -299,7 +302,7 @@ class MatchScraperService(
             }
             
         } catch (e: Exception) {
-            println("⚠️ [FotMob Details] 상세 정보 추출 실패: ${e.message}")
+            log.warn("⚠️ [FotMob Details] 상세 정보 추출 실패: ${e.message}", e)
         }
         return@withContext statsMap
     }

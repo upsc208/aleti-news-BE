@@ -1,5 +1,6 @@
 package com.atleti.news.news.api
 
+import org.slf4j.LoggerFactory
 import com.atleti.news.news.domain.YoutubeService
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
@@ -9,10 +10,12 @@ import org.springframework.web.bind.annotation.RestController
 @RestController
 @RequestMapping("/api/admin/youtube")
 class YoutubeAdminController(private val youtubeService: YoutubeService) {
+    private val log = LoggerFactory.getLogger(YoutubeAdminController::class.java)
+
 
     @GetMapping("/trigger")
     suspend fun triggerYoutubePipeline(@RequestParam(required = false, defaultValue = "@rubenuriagonzalez") channelId: String): String {
-        println("🔘 수동 유튜브 파이프라인 트리거: $channelId")
+        log.info("🔘 수동 유튜브 파이프라인 트리거: $channelId")
         youtubeService.runYoutubePipeline(channelId)
         return "유튜브 파이프라인 실행 완료! 로그를 확인하세요."
     }
