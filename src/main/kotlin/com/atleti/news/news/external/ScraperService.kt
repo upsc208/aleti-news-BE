@@ -116,18 +116,22 @@ class ScraperService {
         internal fun parseMarcaList(doc: Document): List<ScrapedArticle> =
             doc.select("article.ue-c-cover-content, .ue-c-main-article, .ue-c-cover-content__main article")
                 .mapNotNull { element ->
-                    val title = element.select("h2, h3").firstOrNull()?.text() ?: return@mapNotNull null
-                    val link = element.select("a").attr("abs:href")
-                    if (title.isBlank() || link.isBlank() || !link.contains("marca.com")) return@mapNotNull null
+                    // 항목 하나가 터져도 그것만 버린다. 여기서 예외가 밖으로 나가면
+                    // 호출부의 catch가 받아 **목록 전체가 빈 리스트**가 된다
+                    runCatching {
+                        val title = element.select("h2, h3").firstOrNull()?.text() ?: return@runCatching null
+                        val link = element.select("a").attr("abs:href")
+                        if (title.isBlank() || link.isBlank() || !link.contains("marca.com")) return@runCatching null
 
-                    ScrapedArticle(
-                        title = title,
-                        url = link,
-                        imageUrl = element.select("img").attr("src"),
-                        sourceName = "Marca",
-                        articleType = ArticleType.WEB_ARTICLE,
-                        authorName = "Marca"
-                    )
+                        ScrapedArticle(
+                            title = title,
+                            url = link,
+                            imageUrl = element.select("img").attr("src"),
+                            sourceName = "Marca",
+                            articleType = ArticleType.WEB_ARTICLE,
+                            authorName = "Marca"
+                        )
+                    }.getOrNull()
                 }
 
         /**
@@ -139,18 +143,21 @@ class ScraperService {
          */
         internal fun parseAsList(doc: Document): List<ScrapedArticle> =
             doc.select(".b_col_a .s").mapNotNull { element ->
-                val titleElement = element.select(".s_t a").firstOrNull() ?: return@mapNotNull null
-                val link = titleElement.attr("abs:href")
-                if (!link.contains(AS_ARTICLE_SUFFIX) || !link.startsWith("https://as.com")) return@mapNotNull null
+                // [parseMarcaList]와 같은 이유로 항목 단위로 감싼다
+                runCatching {
+                    val titleElement = element.select(".s_t a").firstOrNull() ?: return@runCatching null
+                    val link = titleElement.attr("abs:href")
+                    if (!link.contains(AS_ARTICLE_SUFFIX) || !link.startsWith("https://as.com")) return@runCatching null
 
-                ScrapedArticle(
-                    title = titleElement.text(),
-                    url = link,
-                    imageUrl = element.select("img").attr("src"),
-                    sourceName = "AS",
-                    articleType = ArticleType.WEB_ARTICLE,
-                    authorName = "AS"
-                )
+                    ScrapedArticle(
+                        title = titleElement.text(),
+                        url = link,
+                        imageUrl = element.select("img").attr("src"),
+                        sourceName = "AS",
+                        articleType = ArticleType.WEB_ARTICLE,
+                        authorName = "AS"
+                    )
+                }.getOrNull()
             }
 
         private val AS_ARTICLE_SUFFIX = Regex("-[nvf]/?$")
@@ -164,9 +171,11 @@ class ScraperService {
          * 찍혀도 예외는 안 난다. 이 폴백들이 이 클래스에서 테스트가 가장 필요한 부분이다.
          */
         internal fun parseArticleDetail(doc: Document, now: OffsetDateTime): ArticleDetail {
+            // 셀렉터가 맞았는데 텍스트가 비면 그 빈 값을 그대로 쓴다 — 옛 동작 그대로다.
+            // 메타로 내려가게 하는 편이 나아 보이지만, 그건 동작 변경이라 이 커밋의 범위가 아니다.
             val authorName = doc
                 .select(".ue-c-article__author-name, .ue-c-article__author-link, .author-name, .a_md_a_n, .s_a")
-                .firstOrNull()?.text()?.takeIf { it.isNotBlank() }
+                .firstOrNull()?.text()
                 ?: doc.select("meta[property='article:author']").attr("content").takeIf { it.isNotBlank() }
                 ?: "Unknown"
 
