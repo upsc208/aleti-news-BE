@@ -1,5 +1,6 @@
 package com.atleti.news.chat.infra
 
+import com.atleti.news.common.AllowedOrigins
 import org.springframework.context.annotation.Configuration
 import org.springframework.messaging.Message
 import org.springframework.messaging.MessageChannel
@@ -21,12 +22,15 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 @Configuration
 @EnableWebSocketMessageBroker
 class WebSocketConfig(
-    private val ipHandshakeInterceptor: IpHandshakeInterceptor
+    private val ipHandshakeInterceptor: IpHandshakeInterceptor,
+    private val allowedOrigins: AllowedOrigins
 ) : WebSocketMessageBrokerConfigurer {
 
     override fun registerStompEndpoints(registry: StompEndpointRegistry) {
         registry.addEndpoint("/ws")
-            .setAllowedOriginPatterns("*")   // 개발 단계 전체 허용 — 배포 전 프론트 도메인으로 제한 예정
+            // REST CORS와 **같은 목록**을 쓴다 (AllowedOrigins). 전에는 여기만 "*"였다 —
+            // 아무 사이트나 우리 채팅방에 붙어 읽고 쓸 수 있는 상태로 배포돼 있었다
+            .setAllowedOriginPatterns(*allowedOrigins.patterns)
             .addInterceptors(ipHandshakeInterceptor)   // 핸드셰이크 시 IP 캡처 (rate limit용)
             .withSockJS()                    // WebSocket 미지원 환경에서 HTTP 폴링으로 자동 대체
     }
