@@ -234,7 +234,8 @@ class FotMobLiveClientTest {
             withHalfs(
                 """{ "firstHalfStarted": "09.08.2026 13:03:30",
                      "firstHalfEnded":    "09.08.2026 13:53:15",
-                     "secondHalfStarted": "09.08.2026 14:11:25" }"""
+                     "secondHalfStarted": "09.08.2026 14:11:25",
+                     "secondHalfEnded":   "09.08.2026 15:03:40" }"""
             )
         ).periods
 
@@ -242,6 +243,8 @@ class FotMobLiveClientTest {
         assertEquals(Instant.parse("2026-08-09T11:03:30Z"), periods?.firstHalfStarted?.toInstant())
         assertEquals(Instant.parse("2026-08-09T11:53:15Z"), periods?.firstHalfEnded?.toInstant())
         assertEquals(Instant.parse("2026-08-09T12:11:25Z"), periods?.secondHalfStarted?.toInstant())
+        // 종료 시각 — 화면 시계가 여기서 멈춘다
+        assertEquals(Instant.parse("2026-08-09T13:03:40Z"), periods?.secondHalfEnded?.toInstant())
     }
 
     @Test

@@ -149,7 +149,8 @@ class FotMobLiveClient(
         return LivePeriods(
             firstHalfStarted = at("firstHalfStarted"),
             firstHalfEnded = at("firstHalfEnded"),
-            secondHalfStarted = at("secondHalfStarted")
+            secondHalfStarted = at("secondHalfStarted"),
+            secondHalfEnded = at("secondHalfEnded")
         )
     }
 

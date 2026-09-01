@@ -249,10 +249,26 @@ ssh -i ~/.ssh/atleti-deploy-key ubuntu@168.110.106.79 \
 
 이 줄이 **안** 보이면 네이버가 더 빨랐다는 뜻이고, 그것대로 알아낸 값이다.
 
+### 덤 — 경기가 끝나도 시계가 안 멈추던 것
+
+로그를 보다 발견한 것이라 관측 목록에는 없다. `formatMatchClock`의 90분 상한은 예정
+킥오프로 어림하는 **폴백 경로에만** 걸려 있었고, 기준점으로 세는 정상 경로에는 종료 분기가
+없어 종료 뒤에도 후반 기준점부터 계속 더해졌다(95분, 106분…).
+
+`LivePeriods`에 `secondHalfEnded`를 더했다. FotMob `halfs`에 있으면 그 값을 쓰고, 없으면
+종료를 감지한 시각으로 찍는다 — `firstHalfEnded`와 같은 구조다. 화면은
+`45:00 + (secondHalfEnded − secondHalfStarted)`에 멈춘다.
+
+**화면 상태가 아니라 스냅샷에 실어 보낸다.** 종료 순간을 보고 있던 사람만 멈추면 늦게
+들어오거나 새로고침한 사람은 다시 도는 시계를 본다.
+
 ### 바뀐 파일
 
-`LiveMatchPoller.kt`(조회 간격·후반 시작 판정·종료 선행 판정), `NaverSportsClient.kt`(`isSecondHalf`),
-`LiveSnapshot.kt`(`secondHalf`), `LiveMatchFeedTest.kt`(테스트 13개 추가). 전체 206개 통과.
+`LiveMatchPoller.kt`(조회 간격·후반 시작 판정·종료 선행 판정·종료 시각), `NaverSportsClient.kt`(`isSecondHalf`),
+`LiveSnapshot.kt`(`secondHalf`), `LiveMatchState.kt`·`FotMobLiveClient.kt`(`secondHalfEnded`),
+`LiveMatchFeedTest.kt`·`FotMobLiveClientTest.kt`(테스트 16개 추가). 전체 208개 통과.
+
+FE — `boardModel.ts`(종료 시각에 시계 정지).
 
 **배포는 아직이다.** 운영에 도는 jar는 8/26 패키지 정리 이전 빌드다(로그의 클래스명이
 `com.atleti.news.service.LiveMatchPoller`).
@@ -265,4 +281,3 @@ ssh -i ~/.ssh/atleti-deploy-key ubuntu@168.110.106.79 \
 |---|---|---|
 | ④ | 골에만 소스 도착 지연이 더 얹히는 구조 | 값 조정으로는 못 고친다. 구조를 바꿀지 별도 판단 |
 | — | FotMob 라이브 응답 `Cache-Control` | 라운드 2에서 넘어온 미측정 항목 |
-| — | **경기가 끝나도 화면 시계가 안 멈춘다** — `formatMatchClock`에 종료 분기가 없어 후반 기준점부터 계속 센다 | 이번 테스트에서 보고된 적은 없다. 관측 확인 필요 |

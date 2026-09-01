@@ -700,18 +700,51 @@ class LiveMatchFeedTest {
     // ── 화면 시계 지연 (8/20 말라가전 실측: 쿠팡플레이보다 27~33초 빨랐다) ──
 
     @Test
-    @DisplayName("기준점 셋을 같은 폭으로 민다")
+    @DisplayName("기준점 넷을 같은 폭으로 민다")
     fun testClockDelayShiftsAllAnchors() {
         val p = LivePeriods(
             firstHalfStarted = at("2026-08-20T04:08:20+09:00"),
             firstHalfEnded = at("2026-08-20T04:55:10+09:00"),
-            secondHalfStarted = at("2026-08-20T05:10:40+09:00")
+            secondHalfStarted = at("2026-08-20T05:10:40+09:00"),
+            secondHalfEnded = at("2026-08-20T06:02:15+09:00")
         )
         val d = LiveMatchPoller.delayed(p, 30)!!
 
         assertEquals(at("2026-08-20T04:08:50+09:00"), d.firstHalfStarted)
         assertEquals(at("2026-08-20T04:55:40+09:00"), d.firstHalfEnded)
         assertEquals(at("2026-08-20T05:11:10+09:00"), d.secondHalfStarted)
+        // 하나라도 빠뜨리면 종료 시각만 안 밀려 시계가 그 폭만큼 더 가다 멈춘다
+        assertEquals(at("2026-08-20T06:02:45+09:00"), d.secondHalfEnded)
+    }
+
+    @Test
+    @DisplayName("종료 시각도 차이로 쓰이므로 멈춘 값은 지연과 무관하다")
+    fun testFullTimeFrozenValueSurvivesDelay() {
+        // 화면은 종료 뒤 `45:00 + (secondHalfEnded − secondHalfStarted)`에 멈춘다
+        val p = LivePeriods(
+            secondHalfStarted = at("2026-08-20T05:10:40+09:00"),
+            secondHalfEnded = at("2026-08-20T06:02:15+09:00")
+        )
+        val d = LiveMatchPoller.delayed(p, 25)!!
+
+        assertEquals(
+            java.time.Duration.between(p.secondHalfStarted, p.secondHalfEnded),
+            java.time.Duration.between(d.secondHalfStarted, d.secondHalfEnded)
+        )
+    }
+
+    @Test
+    @DisplayName("종료 시각이 들어오면 상태 변화로 잡힌다 — 안 그러면 화면이 모른다")
+    fun testFullTimeIsAClockChange() {
+        val running = LivePeriods(
+            firstHalfStarted = at("2026-08-20T04:08:20+09:00"),
+            secondHalfStarted = at("2026-08-20T05:10:40+09:00")
+        )
+        val stopped = running.copy(secondHalfEnded = at("2026-08-20T06:02:15+09:00"))
+
+        assertTrue(
+            LiveMatchPoller.clockChanged(state(periods = running), state(periods = stopped))
+        )
     }
 
     @Test

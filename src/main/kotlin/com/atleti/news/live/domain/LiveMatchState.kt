@@ -61,7 +61,17 @@ data class LiveMatchState(
 data class LivePeriods(
     val firstHalfStarted: OffsetDateTime? = null,
     val firstHalfEnded: OffsetDateTime? = null,
-    val secondHalfStarted: OffsetDateTime? = null
+    val secondHalfStarted: OffsetDateTime? = null,
+    /**
+     * 경기가 끝난 시각 — **화면 시계를 여기서 멈춘다.**
+     *
+     * 이게 없으면 종료 뒤에도 시계가 후반 기준점부터 계속 더해져 95분, 100분으로 올라간다.
+     * 하프타임에 [firstHalfEnded]로 멈추는 것과 같은 구조다.
+     *
+     * 종료 순간을 본 사람만 멈추게 할 수는 없다 — 늦게 들어오거나 새로고침한 사람도
+     * 같은 값을 봐야 하므로 화면 상태가 아니라 **스냅샷에** 실어 보낸다.
+     */
+    val secondHalfEnded: OffsetDateTime? = null
 )
 
 /**

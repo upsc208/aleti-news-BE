@@ -392,8 +392,9 @@ class LiveMatchPoller(
             finished = snapshot.finished || feed.finishedEarly,
             goals = snapshot.goals.map { it.copy(nameLatin = known[it.key]) },
             substitutions = feed.substitutions ?: snapshot.substitutions,
-            // 원본 스냅샷으로 넘긴다 — 여기서 만든 종료 판단이 시계 메꿈에 끼어들면 안 된다
-            periods = fillClockFromStatus(matchId, feed, snapshot)
+            // 종료 여부만 합쳐서 넘긴다 — 시계를 멈출 시각은 FotMob이 먼저 알려준 종료에도
+            // 찍혀야 한다. 나머지 판정(하프타임·후반)은 원본 상태 문구를 그대로 본다
+            periods = fillClockFromStatus(matchId, feed, snapshot, ended = snapshot.finished || feed.finishedEarly)
         )
     }
 
@@ -409,12 +410,29 @@ class LiveMatchPoller(
      *
      * FotMob 값이 나중에라도 오면 그쪽이 이긴다 — 여기서는 비어 있을 때만 채운다.
      */
-    private fun fillClockFromStatus(matchId: String, feed: MatchFeedState, snapshot: LiveSnapshot): LivePeriods? {
+    private fun fillClockFromStatus(
+        matchId: String,
+        feed: MatchFeedState,
+        snapshot: LiveSnapshot,
+        ended: Boolean
+    ): LivePeriods? {
         val anchor = feed.clockAnchor ?: return null
         // 전반 시작조차 모르면 메꿀 기준이 없다. 엉뚱한 시각을 지어내지 않는다
         if (anchor.firstHalfStarted == null) return anchor
 
         val now = OffsetDateTime.now()
+
+        // 경기 종료 — 시계를 여기서 멈춘다. 이게 없으면 종료 뒤에도 후반 기준점부터
+        // 계속 더해져 95분, 100분으로 올라간다.
+        //
+        // 후반이 시작된 경기에만 찍는다. 전반에 중단된 경기(취소·연기)는 멈출 자리가
+        // 후반 시계가 아니라 전반이고, 그 값을 여기서 지어내지 않는다.
+        if (ended && anchor.secondHalfStarted != null && anchor.secondHalfEnded == null) {
+            val filled = anchor.copy(secondHalfEnded = now)
+            feed.clockAnchor = filled
+            log.info("🏁 [Live] 경기 종료 — 시계를 멈춥니다 ({}) (matchId={})", snapshot.status, matchId)
+            return filled
+        }
 
         if (snapshot.halftime && anchor.firstHalfEnded == null) {
             val filled = anchor.copy(firstHalfEnded = now)
@@ -427,7 +445,7 @@ class LiveMatchPoller(
         // 소스가 후반이라고 말하는 순간 = 후반 시작. 이게 있어야 화면이 45:00부터 다시 센다
         val firstHalfEnded = anchor.firstHalfEnded
         if (firstHalfEnded != null && anchor.secondHalfStarted == null &&
-            !snapshot.finished && secondHalfBegun(snapshot, firstHalfEnded, now)
+            !ended && secondHalfBegun(snapshot, firstHalfEnded, now)
         ) {
             val filled = anchor.copy(secondHalfStarted = now)
             feed.clockAnchor = filled
@@ -1025,7 +1043,8 @@ class LiveMatchPoller(
             LivePeriods(
                 firstHalfStarted = fresh.firstHalfStarted ?: current?.firstHalfStarted,
                 firstHalfEnded = fresh.firstHalfEnded ?: current?.firstHalfEnded,
-                secondHalfStarted = fresh.secondHalfStarted ?: current?.secondHalfStarted
+                secondHalfStarted = fresh.secondHalfStarted ?: current?.secondHalfStarted,
+                secondHalfEnded = fresh.secondHalfEnded ?: current?.secondHalfEnded
             )
 
         /**
@@ -1115,7 +1134,8 @@ class LiveMatchPoller(
             return LivePeriods(
                 firstHalfStarted = push(periods.firstHalfStarted),
                 firstHalfEnded = push(periods.firstHalfEnded),
-                secondHalfStarted = push(periods.secondHalfStarted)
+                secondHalfStarted = push(periods.secondHalfStarted),
+                secondHalfEnded = push(periods.secondHalfEnded)
             )
         }
 
@@ -1144,7 +1164,8 @@ class LiveMatchPoller(
             if (a == null || b == null) return a == b
             return a.firstHalfStarted?.toInstant() == b.firstHalfStarted?.toInstant() &&
                 a.firstHalfEnded?.toInstant() == b.firstHalfEnded?.toInstant() &&
-                a.secondHalfStarted?.toInstant() == b.secondHalfStarted?.toInstant()
+                a.secondHalfStarted?.toInstant() == b.secondHalfStarted?.toInstant() &&
+                a.secondHalfEnded?.toInstant() == b.secondHalfEnded?.toInstant()
         }
 
         /**
