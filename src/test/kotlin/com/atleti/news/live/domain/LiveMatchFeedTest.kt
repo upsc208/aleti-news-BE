@@ -330,6 +330,34 @@ class LiveMatchFeedTest {
         assertTrue(NaverSportsClient.isHalftime(game("x", null, statusCode = "STARTED", statusInfo = "전반 종료")))
     }
 
+    // ── 후반 판정 (8/30 세비야전) ─────────────────────────────────────────
+    //
+    // 그 경기 로그에서 확인한 라리가 표기: `전반 3'` → `전반종료` → `후반 1'` → `경기종료`.
+    // 설계 문서가 예로 들던 `경기중`은 한 번도 안 나왔다.
+
+    @Test
+    @DisplayName("후반 표기는 분이 붙어 있어도 후반으로 본다")
+    fun testSecondHalfLabels() {
+        for (label in listOf("후반 1'", "후반 45'", "경기중")) {
+            assertTrue(
+                NaverSportsClient.isSecondHalf(game("x", null, statusCode = "STARTED", statusInfo = label)),
+                label
+            )
+        }
+    }
+
+    @Test
+    @DisplayName("전반·하프타임·종료는 후반이 아니다")
+    fun testSecondHalfExcludesEverythingElse() {
+        // `전반 50'`이 핵심이다 — 이걸 후반으로 읽어 하프타임 12초 만에 기준점이 찍혔다
+        for (label in listOf("전반 50'", "전반종료", "경기종료", "경기전", "후반종료")) {
+            assertFalse(
+                NaverSportsClient.isSecondHalf(game("x", null, statusCode = "STARTED", statusInfo = label)),
+                label
+            )
+        }
+    }
+
     // ── 상태 변화 브로드캐스트 (8/15 실경기에서 드러난 문제) ──────────────
     //
     // 8/15 마르세유전에서 하프타임에 화면 시계가 안 멈췄다. 서버는 전반 종료 시각을
@@ -717,11 +745,29 @@ class LiveMatchFeedTest {
 
     // ── 시계 조회 간격 ────────────────────────────────────────────────────
 
+    /** 예정 킥오프 — 기준점이 없는 구간의 간격은 이 시각을 기준으로 갈린다 */
+    private val kickoff = at("2026-08-15T00:30:00+09:00").toInstant()
+
     @Test
-    @DisplayName("기준점이 없으면 촘촘히 물어본다")
-    fun testClockRetryIsUrgentWithoutAnchor() {
-        val now = at("2026-08-15T00:31:00+09:00").toInstant()
-        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(null, now))
+    @DisplayName("킥오프 직후 기준점이 없으면 턴마다 물어본다 — 보드가 그동안 꺼져 있다")
+    fun testClockRetryIsImmediateRightAfterKickoff() {
+        val now = at("2026-08-15T00:31:00+09:00").toInstant()   // 예정 킥오프 +1분
+        assertEquals(Duration.ofSeconds(5), LiveMatchPoller.clockRetryInterval(null, now, kickoff))
+    }
+
+    @Test
+    @DisplayName("세레머니로 킥오프가 8분 늦어도 아직 촘촘히 본다")
+    fun testClockRetryStaysImmediateThroughCeremony() {
+        // 8/20 말라가전 실측: 예정 04:00 → 실제 04:08:20
+        val now = at("2026-08-15T00:38:20+09:00").toInstant()
+        assertEquals(Duration.ofSeconds(5), LiveMatchPoller.clockRetryInterval(null, now, kickoff))
+    }
+
+    @Test
+    @DisplayName("10분이 지나도록 기준점이 안 오면 물러선다 — 243KB를 세 시간 때리지 않는다")
+    fun testClockRetryBacksOffWhenAnchorNeverArrives() {
+        val now = at("2026-08-15T00:41:00+09:00").toInstant()   // 예정 킥오프 +11분
+        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(null, now, kickoff))
     }
 
     @Test
@@ -729,7 +775,7 @@ class LiveMatchFeedTest {
     fun testClockRetryIsRelaxedMidFirstHalf() {
         val periods = LivePeriods(firstHalfStarted = at("2026-08-15T00:31:35+09:00"))
         val now = at("2026-08-15T01:00:00+09:00").toInstant()   // 28분 경과
-        assertEquals(Duration.ofSeconds(60), LiveMatchPoller.clockRetryInterval(periods, now))
+        assertEquals(Duration.ofSeconds(60), LiveMatchPoller.clockRetryInterval(periods, now, kickoff))
     }
 
     @Test
@@ -737,7 +783,7 @@ class LiveMatchFeedTest {
     fun testClockRetryTightensBeforeHalftime() {
         val periods = LivePeriods(firstHalfStarted = at("2026-08-15T00:31:35+09:00"))
         val now = at("2026-08-15T01:15:00+09:00").toInstant()   // 43분 경과
-        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(periods, now))
+        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(periods, now, kickoff))
     }
 
     @Test
@@ -748,7 +794,108 @@ class LiveMatchFeedTest {
             firstHalfEnded = at("2026-08-15T01:18:20+09:00")
         )
         val now = at("2026-08-15T01:25:00+09:00").toInstant()
-        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(periods, now))
+        assertEquals(Duration.ofSeconds(15), LiveMatchPoller.clockRetryInterval(periods, now, kickoff))
+    }
+
+    // ── 후반 시작 판정 (8/30 세비야전 재현) ──────────────────────────────
+    //
+    // 그 경기의 실제 시각. 로그의 periods는 delayed()를 통과한 값이라 25초를 뺐다.
+    //   전반 시작 19:30:43Z · 전반 종료 20:21:51Z(FotMob) · 후반 시작 20:38:34Z
+
+    private val firstHalfEnded = at("2026-08-29T20:21:51Z")
+
+    private fun naverSnap(label: String) =
+        game("x", null, statusCode = "STARTED", statusInfo = label).toSnapshot()
+
+    @Test
+    @DisplayName("전반 종료 직후 네이버가 아직 `전반 50'`이면 후반으로 보지 않는다")
+    fun testSecondHalfNotStampedWhileSourceStillSaysFirstHalf() {
+        // 실제로 여기서 찍혔다 — 전반 종료 12초 뒤. 시계가 45:00부터 다시 돌기 시작했다
+        val now = firstHalfEnded.plusSeconds(12)
+
+        assertFalse(LiveMatchPoller.secondHalfBegun(naverSnap("전반 50'"), firstHalfEnded, now))
+    }
+
+    @Test
+    @DisplayName("하프타임 표기 동안에도 찍지 않는다")
+    fun testSecondHalfNotStampedDuringHalftime() {
+        val now = firstHalfEnded.plusMinutes(8)
+
+        assertFalse(LiveMatchPoller.secondHalfBegun(naverSnap("전반종료"), firstHalfEnded, now))
+    }
+
+    @Test
+    @DisplayName("네이버가 후반이라고 말하면 그때 찍는다")
+    fun testSecondHalfStampedOnPositiveSignal() {
+        // 실제 후반 시작 20:38:34Z — 전반 종료로부터 16분 43초
+        val now = firstHalfEnded.plusMinutes(16).plusSeconds(43)
+
+        assertTrue(LiveMatchPoller.secondHalfBegun(naverSnap("후반 1'"), firstHalfEnded, now))
+    }
+
+    @Test
+    @DisplayName("모르는 표기는 규정 휴식 15분이 지나야 후반으로 본다")
+    fun testUnknownLabelWaitsOutTheBreak() {
+        val unknown = naverSnap("2nd half")
+
+        assertFalse(LiveMatchPoller.secondHalfBegun(unknown, firstHalfEnded, firstHalfEnded.plusMinutes(14)))
+        // 뒷문을 아예 막으면 모르는 대회에서 시계가 하프타임에 갇힌다
+        assertTrue(LiveMatchPoller.secondHalfBegun(unknown, firstHalfEnded, firstHalfEnded.plusMinutes(15)))
+    }
+
+    // ── 종료는 두 소스 중 먼저 아는 쪽 (8/30 세비야전) ──
+
+    /** 그 경기 기준: 후반은 여기서 시작했다고 치고 잰다 */
+    private val secondHalf = at("2026-08-30T05:35:00+09:00")
+
+    private fun fotMobSnap(finished: Boolean) = LiveSnapshot(
+        source = LiveSource.FOTMOB, status = if (finished) "경기종료" else "경기중",
+        homeTeam = "Sevilla", awayTeam = "Atlético Madrid",
+        homeScore = 0, awayScore = 1, competition = "LaLiga",
+        goals = emptyList(), finished = finished
+    )
+
+    @Test
+    @DisplayName("후반 40분이 지난 뒤 FotMob이 끝났다고 하면 네이버를 기다리지 않는다")
+    fun testFinishedAheadAcceptedLate() {
+        val anchor = LivePeriods(secondHalfStarted = secondHalf)
+        val now = secondHalf.plusMinutes(47).toInstant()   // 92분
+
+        assertTrue(LiveMatchPoller.finishedAhead(fotMobSnap(finished = true), anchor, now))
+    }
+
+    @Test
+    @DisplayName("정규 시간이 남아 있으면 FotMob이 끝났다고 해도 안 믿는다")
+    fun testFinishedAheadRejectedTooEarly() {
+        val anchor = LivePeriods(secondHalfStarted = secondHalf)
+        val now = secondHalf.plusMinutes(20).toInstant()   // 65분 — 끝날 수 없다
+
+        // 8/20에 종료를 일찍 잡아 후반이 통째로 날아갔다. 그 실수는 다시 하지 않는다
+        assertFalse(LiveMatchPoller.finishedAhead(fotMobSnap(finished = true), anchor, now))
+    }
+
+    @Test
+    @DisplayName("기준점이 없으면 대볼 시계가 없다 — 네이버를 기다린다")
+    fun testFinishedAheadNeedsClock() {
+        val now = secondHalf.plusMinutes(47).toInstant()
+
+        assertFalse(LiveMatchPoller.finishedAhead(fotMobSnap(finished = true), null, now))
+        assertFalse(
+            LiveMatchPoller.finishedAhead(
+                fotMobSnap(finished = true),
+                LivePeriods(firstHalfStarted = at("2026-08-30T04:31:00+09:00")),
+                now
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("FotMob이 아직 경기중이면 아무것도 당기지 않는다")
+    fun testFinishedAheadIgnoresLiveSnapshot() {
+        val anchor = LivePeriods(secondHalfStarted = secondHalf)
+        val now = secondHalf.plusMinutes(47).toInstant()
+
+        assertFalse(LiveMatchPoller.finishedAhead(fotMobSnap(finished = false), anchor, now))
     }
 
     // ── 새 골은 FotMob 조회 간격을 건너뛴다 (8/24 비야레알전) ──

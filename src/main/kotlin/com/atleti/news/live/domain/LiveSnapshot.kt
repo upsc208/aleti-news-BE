@@ -97,6 +97,16 @@ data class LiveSnapshot(
      * (2026-08-20 말라가전에서 실제로 끝내 안 왔다).
      */
     val halftime: Boolean = false,
+    /**
+     * 후반이 돌고 있는지. [halftime]과 마찬가지로 네이버만 알려준다.
+     *
+     * **[halftime]의 반대가 아니다.** 둘 다 false인 구간이 실제로 있다 — 전반이 그렇고,
+     * 8/30 세비야전에서는 FotMob이 전반 종료를 알려준 뒤에도 네이버가 42초 동안
+     * `전반 50'`에 머물렀다. 그 구간을 "후반"으로 읽어 시계 기준점이 잘못 찍혔다.
+     *
+     * FotMob 스냅샷에서는 항상 false다. 그쪽은 기준점을 직접 주므로 이 신호가 필요 없다.
+     */
+    val secondHalf: Boolean = false,
     /** 경기 시계 기준점. FotMob만 준다 — 네이버 스냅샷에서는 null */
     val periods: LivePeriods? = null
 )

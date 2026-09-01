@@ -66,6 +66,7 @@ data class NaverGame(
         goals = scorers,
         finished = NaverSportsClient.isFinished(this),
         halftime = NaverSportsClient.isHalftime(this),
+        secondHalf = NaverSportsClient.isSecondHalf(this),
         statusCode = statusCode
     )
 }
@@ -255,6 +256,22 @@ class NaverSportsClient(
         /** 하프타임 표기 (2026-08-20 실측: `전반종료`) */
         private val HALFTIME_LABELS = setOf("전반종료", "하프타임", "휴식")
 
+        /**
+         * 후반이 돌고 있다는 표기.
+         *
+         * **라리가 표기는 분 단위다** — 2026-08-30 세비야전 로그에서 확인했다:
+         * `전반 3'` → `전반종료` → `후반 1'` → `경기종료`. 설계 문서가 예로 들던 `경기중`은
+         * 이 대회에서 한 번도 안 나왔다. 그래서 정확 일치가 아니라 `후반`을 품었는지로 본다.
+         *
+         * 다른 대회가 `경기중`으로 줄 가능성은 남아 있어 함께 받아 둔다. `전반종료`는
+         * `전반`을 품고 있으니 여기 걸리지 않는다.
+         */
+        private const val SECOND_HALF_MARK = "후반"
+        private val IN_PLAY_LABELS = setOf("경기중")
+
+        /** 끝을 가리키는 조각. 후반 판정에서만 부분 일치로 쓴다 ([isSecondHalf]) */
+        private const val END_MARK = "종료"
+
         private fun normalize(statusInfo: String) = statusInfo.replace(" ", "").trim()
 
         /**
@@ -279,5 +296,28 @@ class NaverSportsClient(
          */
         internal fun isHalftime(game: NaverGame): Boolean =
             normalize(game.statusInfo) in HALFTIME_LABELS
+
+        /**
+         * 후반이 시작됐는지. **"하프타임이 아니다"의 반대말이 아니다.**
+         *
+         * 8/30 세비야전에서 전반 종료를 FotMob이 먼저 알려줬는데 네이버는 그때 아직
+         * `전반 50'`이었다. "하프타임이 아니면 후반"으로 보던 판정이 그 순간 걸려서
+         * 전반 종료 12초 만에 후반 시작 시각이 찍혔다 (docs/round3.md ③).
+         *
+         * 그래서 **후반이라고 말할 때만** 참이다.
+         *
+         * **여기서는 `종료`를 품은 표기를 부분 일치로 걷어낸다.** 종료 판정에서 부분 일치를
+         * 금지한 것([FINISHED_LABELS])과 반대로 보이지만 묻는 질문이 다르다. 저쪽은
+         * "경기가 끝났나"라 잘못 참이면 경기가 통째로 날아가지만, 이쪽은 "후반이 시작됐나"라
+         * 잘못 참이면 시계 기준점이 엉뚱한 시각에 찍힌다. `후반종료`처럼 모르는 종료 표기를
+         * 후반으로 읽으면 **경기 끝에 시계가 45:00으로 되돌아간다.** 여기서는 안 찍는 쪽이
+         * 안전하다 — 시계는 멈춰 있다가 FotMob 값이 오면 맞춰진다.
+         */
+        internal fun isSecondHalf(game: NaverGame): Boolean {
+            if (isFinished(game) || isHalftime(game)) return false
+            val label = normalize(game.statusInfo)
+            if (label.contains(END_MARK)) return false
+            return label.contains(SECOND_HALF_MARK) || label in IN_PLAY_LABELS
+        }
     }
 }

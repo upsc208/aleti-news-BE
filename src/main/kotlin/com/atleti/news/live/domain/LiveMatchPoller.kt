@@ -129,6 +129,14 @@ class LiveMatchPoller(
         @Volatile var lastStatus: String? = null
 
         /**
+         * FotMob이 네이버보다 먼저 본 종료 ([finishedAhead]).
+         *
+         * **한 번 잡으면 유지한다.** 네이버는 그동안 아직 `경기중`이라, 매 턴 다시 물으면
+         * 보드가 종료됐다 되살아났다 한다 — 축포는 이미 터진 뒤라 되돌릴 수도 없다.
+         */
+        @Volatile var finishedEarly: Boolean = false
+
+        /**
          * FotMob에서 받아 둔 교체 목록. 네이버에는 이 데이터가 없어서 주 스냅샷에 얹어 준다.
          *
          * 골처럼 매 턴 새로 받는 게 아니라 **FotMob을 부를 때만** 갱신되므로, 마지막으로 받은
@@ -250,7 +258,7 @@ class LiveMatchPoller(
         //
         // **이 단계까지는 실시간으로 한다.** 라틴 이름·시계 기준점은 지금 받아 둬야 하고,
         // 특히 하프타임 기준점은 그 순간의 시각으로 찍혀야 정확하다. 늦추는 것은 그 다음이다
-        val enriched = withLatinNames(matchId, feed, fetched, started = !OffsetDateTime.now().isBefore(match.kickoff))
+        val enriched = withLatinNames(matchId, feed, fetched, match.kickoff)
 
         // 중계보다 늦게 내보낸다 — 아직 충분히 묵지 않았으면 이번 턴은 조용히 넘어간다
         val snapshot = takeDue(feed, enriched) ?: return
@@ -297,7 +305,7 @@ class LiveMatchPoller(
         matchId: String,
         feed: MatchFeedState,
         snapshot: LiveSnapshot,
-        started: Boolean
+        kickoff: OffsetDateTime
     ): LiveSnapshot {
         // FotMob으로 폴백한 상태면 이름도 팀명도 시계 기준점도 이미 그 응답에 들어 있다
         if (snapshot.source == LiveSource.FOTMOB) {
@@ -307,6 +315,7 @@ class LiveMatchPoller(
 
         val known = feed.latinNames
         val periods = feed.clockAnchor
+        val started = !OffsetDateTime.now().isBefore(kickoff)
 
         val needsNames = snapshot.goals.any { !known.containsKey(it.key) }
         // 팀명은 경기 내내 안 바뀐다. 한 번만 받으면 되고, 킥오프 전에도 보드에 필요하다
@@ -321,7 +330,7 @@ class LiveMatchPoller(
         // 이 간격이 그대로 FotMob 호출 주기가 된다 (응답 243KB — 5초마다 때릴 값이 아니다)
         val wait = when {
             needsNames -> LATIN_RETRY
-            needsClock -> clockRetryInterval(periods, Instant.now())
+            needsClock -> clockRetryInterval(periods, Instant.now(), kickoff.toInstant())
             else -> SUBS_RETRY
         }
         val nextTry = feed.fotMobRetryAfter
@@ -364,12 +373,26 @@ class LiveMatchPoller(
                     }
                     feed.clockAnchor = mergePeriods(feed.clockAnchor, fresh)
                 }
+                if (!feed.finishedEarly && finishedAhead(fotMob, feed.clockAnchor, Instant.now())) {
+                    feed.finishedEarly = true
+                    log.info(
+                        "🏁 [Live] 종료를 FotMob이 먼저 알려줬습니다 — 네이버는 아직 '{}' (matchId={})",
+                        snapshot.status, matchId
+                    )
+                }
             }
         }
 
+        // 종료는 **두 소스 중 먼저 아는 쪽**을 쓴다. 표기까지 바꿔야 한다 —
+        // 화면은 상태 문구가 정확히 `경기종료`일 때만 축포를 띄운다 (docs/round3.md ⑤)
+        val endedAhead = feed.finishedEarly && !snapshot.finished
+
         return snapshot.copy(
+            status = if (endedAhead) FULL_TIME else snapshot.status,
+            finished = snapshot.finished || feed.finishedEarly,
             goals = snapshot.goals.map { it.copy(nameLatin = known[it.key]) },
             substitutions = feed.substitutions ?: snapshot.substitutions,
+            // 원본 스냅샷으로 넘긴다 — 여기서 만든 종료 판단이 시계 메꿈에 끼어들면 안 된다
             periods = fillClockFromStatus(matchId, feed, snapshot)
         )
     }
@@ -401,14 +424,17 @@ class LiveMatchPoller(
             return filled
         }
 
-        // 하프타임이 끝나고 다시 경기중으로 돌아온 순간 = 후반 시작.
-        // 이게 있어야 화면이 45:00부터 다시 센다
-        if (!snapshot.halftime && !snapshot.finished &&
-            anchor.firstHalfEnded != null && anchor.secondHalfStarted == null
+        // 소스가 후반이라고 말하는 순간 = 후반 시작. 이게 있어야 화면이 45:00부터 다시 센다
+        val firstHalfEnded = anchor.firstHalfEnded
+        if (firstHalfEnded != null && anchor.secondHalfStarted == null &&
+            !snapshot.finished && secondHalfBegun(snapshot, firstHalfEnded, now)
         ) {
             val filled = anchor.copy(secondHalfStarted = now)
             feed.clockAnchor = filled
-            log.info("ℹ️ [Live] 후반 시작을 네이버 상태로 잡았습니다 — FotMob 미제공 (matchId={})", matchId)
+            log.info(
+                "ℹ️ [Live] 후반 시작을 네이버 상태로 잡았습니다 ({}) — FotMob 미제공 (matchId={})",
+                snapshot.status, matchId
+            )
             return filled
         }
 
@@ -891,11 +917,99 @@ class LiveMatchPoller(
          */
         private val CLOCK_URGENT_RETRY: Duration = Duration.ofSeconds(15)
 
+        /**
+         * 기준점을 **하나도 못 받은** 구간의 간격 — 턴마다 물어본다.
+         *
+         * 8/30 세비야전에서 시청자가 킥오프를 보고 **40초 뒤에야** 보드가 켜졌다. 그중 25초는
+         * [delaySeconds]라 의도한 값이고, 나머지 31초가 `firstHalfStarted`를 늦게 받은 값이다.
+         * 15초 간격이 여기서 평균 7.5초(최악 15초)를 먹고 있었다 (docs/round3.md ①).
+         *
+         * 응답이 243KB라 아무 때나 5초로 때릴 값은 아니지만, 이 구간은 [KICKOFF_CLOCK_WATCH]로
+         * 잘려 있어 최악이라도 그 안에서 끝난다.
+         *
+         * **간격만으로 40초가 다 설명되지는 않는다.** FotMob 자체 반영·CDN 캐시가 남은 몫인데
+         * 라이브 응답의 `Cache-Control`은 아직 실측 전이다(라운드 2에서 넘어온 항목). 캐시가
+         * 5초보다 길면 여기서 줄어드는 건 간격 몫뿐이다.
+         */
+        private val CLOCK_KICKOFF_RETRY: Duration = Duration.ofSeconds(5)
+
+        /**
+         * 킥오프 직후 시계를 촘촘히 지켜보는 구간. **예정** 킥오프부터 잰다.
+         *
+         * 8/20 말라가전처럼 세레머니로 실제 킥오프가 8분 20초까지 늦어지는 일이 있어 넉넉히
+         * 잡되, 그 뒤로는 다시 느슨해져야 한다 — 매핑이 어긋나 `halfs`를 영영 못 받는 경기에서
+         * 5초마다 243KB를 세 시간 내내 받는 것을 막는 상한이다.
+         */
+        private val KICKOFF_CLOCK_WATCH: Duration = Duration.ofMinutes(10)
+
         /** 이 시점부터 하프타임을 지켜본다. 전반 추가시간이 아무리 짧아도 45분 전에는 안 끝난다 */
         private val HALFTIME_WATCH_FROM: Duration = Duration.ofMinutes(43)
 
+        /**
+         * 규정 하프타임. 소스 표기를 못 알아들었을 때 후반 시작으로 넘어가는 뒷문이다
+         * ([secondHalfBegun]). 실측 휴식은 이보다 길었다 — 8/23 비야레알전 16분 53초,
+         * 8/30 세비야전 16분 43초.
+         */
+        private val REGULATION_BREAK: Duration = Duration.ofMinutes(15)
+
+        /**
+         * 후반이 시작됐다고 볼 수 있는지. **"하프타임이 아니다"로는 안 된다.**
+         *
+         * 2026-08-30 세비야전에서 `firstHalfEnded`를 FotMob이 먼저 알려줬는데(20:21:51Z)
+         * 그 순간 네이버는 아직 `전반 50'`이었다. 하프타임 표기(`전반종료`)로 넘어가기까지
+         * 42초가 걸렸고, 그 사이 "하프타임이 아니다"가 참이라 **전반 종료 12초 만에**
+         * 후반 시작이 찍혔다. 화면 시계는 거기서 45:00부터 다시 세기 시작해 하프타임 내내
+         * 돌았고, 16분 43초 뒤 FotMob의 진짜 값이 덮어써서야 45:00으로 돌아갔다
+         * (docs/round3.md ③).
+         *
+         * **두 소스가 같은 순간을 다른 시각에 안다**는 것이 요점이다. 한쪽이 준 기준점을
+         * 다른 쪽 상태로 해석하면 그 시차만큼 어긋난다. 그래서 후반은 소스가 후반이라고
+         * **말할 때만** 찍는다.
+         *
+         * 모르는 표기는 [REGULATION_BREAK]가 지난 뒤에야 후반으로 본다 — 표기가 대회마다
+         * 다르므로(라리가는 `후반 3'`) 뒷문을 아예 막으면 모르는 대회에서 시계가 하프타임에
+         * 갇힌다. 갇히는 쪽이 도는 쪽보다 낫지만, 15분이면 그 위험 없이 풀린다.
+         */
+        internal fun secondHalfBegun(
+            snapshot: LiveSnapshot,
+            firstHalfEnded: OffsetDateTime,
+            now: OffsetDateTime
+        ): Boolean {
+            if (snapshot.secondHalf) return true
+            if (snapshot.halftime) return false
+            return Duration.between(firstHalfEnded, now) >= REGULATION_BREAK
+        }
+
         /** 한 하프의 정규 시간(분). 골 분에서 전·후반을 가르는 경계다 ([occurredAt]) */
         private const val HALF_MINUTES = 45
+
+        /**
+         * 후반 시작으로부터 이만큼 지나야 FotMob의 종료를 인정한다 (= 85분).
+         * 정규 시간이 5분 넘게 남아 있는데 끝났다고 하는 응답은 믿지 않는다.
+         */
+        private val FINISH_TRUST_FROM: Duration = Duration.ofMinutes(40)
+
+        /** 프론트 계약의 종료 표기. 화면의 `FINAL_STATUS`와 같은 어휘여야 축포가 뜬다 */
+        private const val FULL_TIME = "경기종료"
+
+        /**
+         * FotMob이 먼저 알려준 종료를 받아들일지.
+         *
+         * 8/30 세비야전에서 승리 효과가 경기 종료 1분 뒤에야 나왔다. 역산하면 네이버가
+         * `경기종료`를 51초 늦게 줬고 거기에 [delaySeconds]가 얹힌 값이다. 후반에는 교체
+         * 때문에 어차피 [SUBS_RETRY]마다 FotMob을 부르고 있으므로, 종료도 그 응답에서 먼저
+         * 보면 **호출을 더 늘리지 않고** 그만큼 당겨진다 (docs/round3.md ⑤).
+         *
+         * **다만 종료를 일찍 잡는 실수는 비싸다.** 8/20 말라가전에서 하프타임을 종료로 읽은
+         * 탓에 후반이 통째로 날아갔다. 그래서 시계가 [FINISH_TRUST_FROM](후반 40분 = 85분)을
+         * 지났을 때만 인정한다. 기준점이 없으면 대볼 시계가 없다는 뜻이라 인정하지 않는다 —
+         * 그때는 지금까지처럼 네이버를 기다린다.
+         */
+        internal fun finishedAhead(fotMob: LiveSnapshot, anchor: LivePeriods?, now: Instant): Boolean {
+            if (!fotMob.finished) return false
+            val secondHalf = anchor?.secondHalfStarted?.toInstant() ?: return false
+            return Duration.between(secondHalf, now) >= FINISH_TRUST_FROM
+        }
 
         /**
          * FotMob이 준 기준점을 기존 값 **위에 얹는다.** 통째로 덮어쓰지 않는다.
@@ -1039,14 +1153,17 @@ class LiveMatchPoller(
          * **화면의 시계가 실제로 틀어져 있는 구간에서만 촘촘히 간다.** 나머지 시간에는
          * 기준점이 안 바뀌므로 자주 물어도 같은 값만 돌아온다.
          *
-         * - 기준점이 아직 없다 → 화면은 **예정** 킥오프로 세고 있어 실제 지연만큼 앞서 간다.
-         *   8/15 마르세유전에서 초반 시계가 90~95초 빨랐던 구간이 정확히 여기다
+         * - 기준점이 아직 없다 → 보드가 통째로 안 켜져 있다. 킥오프 직후라면 턴마다
+         *   물어본다 ([CLOCK_KICKOFF_RETRY]), [KICKOFF_CLOCK_WATCH]를 넘기면 느슨해진다
          * - 하프타임 → 후반이 시작되는 순간을 늦게 알수록 시계가 멈춰 있는 시간이 길어진다
          * - 전반 [HALFTIME_WATCH_FROM] 이후 → 곧 하프타임이다. 늦게 알면 그만큼 더
          *   흘러갔다가 되돌아온다
          */
-        internal fun clockRetryInterval(periods: LivePeriods?, now: Instant): Duration {
-            val firstStart = periods?.firstHalfStarted ?: return CLOCK_URGENT_RETRY
+        internal fun clockRetryInterval(periods: LivePeriods?, now: Instant, kickoff: Instant): Duration {
+            val firstStart = periods?.firstHalfStarted
+                ?: return if (Duration.between(kickoff, now) <= KICKOFF_CLOCK_WATCH) CLOCK_KICKOFF_RETRY
+                else CLOCK_URGENT_RETRY
+
             if (periods.firstHalfEnded != null) return CLOCK_URGENT_RETRY
             val elapsed = Duration.between(firstStart.toInstant(), now)
             return if (elapsed >= HALFTIME_WATCH_FROM) CLOCK_URGENT_RETRY else FOTMOB_CLOCK_RETRY
