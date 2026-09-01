@@ -1,7 +1,7 @@
 # 라운드 1 — 8/20 말라가전 실시간 테스트
 
 2026-08-20 04:00 라리가 AT 마드리드 vs 말라가. 휴대폰 접속, 중계는 쿠팡플레이.
-앞선 기록: [live-match-8-15-postmortem.md](live-match-8-15-postmortem.md) · 설계: [live-match-feed-design.md](live-match-feed-design.md)
+앞선 기록: [live-match-8-15-postmortem.md](live-match-8-15-postmortem.md) · 다음 기록: [round2.md](round2.md) · 설계: [live-match-feed-design.md](live-match-feed-design.md)
 
 > **한 줄 요약**
 > 네이버의 하프타임 표기가 `전반종료`인데 `contains("종료")`가 이걸 경기 종료로 읽었다.
