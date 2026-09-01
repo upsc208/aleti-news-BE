@@ -84,7 +84,21 @@ class ChatService(
 
         private const val MAX_RECENT = 100L
         private const val MAX_CONTENT_LENGTH = 200
-        private const val RATE_LIMIT_MAX = 5        // 창 내 최대 전송 수
+        /**
+         * [ChatKeys.RATE_LIMIT_WINDOW](10초) 안에 한 IP가 보낼 수 있는 최대 건수.
+         *
+         * **5에서 10으로 올렸다 (2026-09-01).** 상한이 IP 단위인데 모바일은 통신사 NAT라
+         * 수십 명이 같은 공인 IP로 보인다 — 그 사람들이 한 창을 나눠 쓴다. 골이 터져
+         * 다 같이 치는 30초가 정확히 그 상황이라, 5건이면 몇 명만 치고 나머지는 막힌다.
+         *
+         * 도배는 여전히 막힌다. 10초에 10건은 사람이 손으로 칠 수 있는 속도의 위쪽이고,
+         * 진짜 도배는 그보다 훨씬 빠르다.
+         *
+         * **근본 해결은 아니다.** NAT 뒤 인원이 더 많으면 10건도 나눠 갖는다. 키를
+         * `clientId` 우선으로 바꾸는 선택지가 있는데, 그건 클라이언트가 주는 값이라
+         * 마음먹으면 우회된다 — 쇼케이스 뒤에 따로 판단한다 (docs/chat-load-test.md).
+         */
+        private const val RATE_LIMIT_MAX = 10
         private val URL_PATTERN = Regex("(?i)(https?://|www\\.)")
 
         fun isFreeRoom(matchId: String) = matchId == FREE_ROOM_ID
