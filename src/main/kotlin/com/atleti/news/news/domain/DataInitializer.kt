@@ -74,6 +74,30 @@ class DataInitializer(private val newsSourceRepository: NewsSourceRepository) {
                 displayName = "다비드 비누에사 말박 (@Dvinuesa)",
                 sourceUrl = "https://x.com/Dvinuesa",
                 category = "JOURNALIST"
+            ),
+            NewsSource(
+                internalId = "pascualruizar",
+                displayName = "파스칼 루이스 아르날 (@pascualruizar)",
+                sourceUrl = "https://x.com/pascualruizar",
+                category = "JOURNALIST"
+            ),
+            NewsSource(
+                internalId = "jsancris_",
+                displayName = "호르헤 산 크리스토발 (@jsancris_)",
+                sourceUrl = "https://x.com/jsancris_",
+                category = "JOURNALIST"
+            ),
+            NewsSource(
+                internalId = "Objetivoatleti",
+                displayName = "오브헤티보 아틀레티 (@Objetivoatleti)",
+                sourceUrl = "https://x.com/Objetivoatleti",
+                category = "OFFICIAL"
+            ),
+            NewsSource(
+                internalId = "atletico_stats_",
+                displayName = "아틀레티코 스탯 (@atletico_stats_)",
+                sourceUrl = "https://x.com/atletico_stats_",
+                category = "OFFICIAL"
             )
 
         )
