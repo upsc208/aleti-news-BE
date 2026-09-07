@@ -94,6 +94,14 @@ chmod +x /opt/atleti-news/deploy.sh
 
 배포 시 필요한 sudo는 `systemctl restart atleti-news` 하나뿐. 그것만 비밀번호 없이 허용 (SSH 키가 유출돼도 할 수 있는 게 재시작뿐이도록).
 
+> **⚠️ 2026-09-07 — 이 규칙은 지금 효력이 없다.** 클라우드 이미지의 기본 계정에는 이미
+> `(ALL) NOPASSWD: ALL`이 걸려 있어서, **같은 계정에 좁은 규칙을 더해도 허용 범위가 줄지 않는다.**
+> `sudo -l`로 확인할 수 있다.
+>
+> 제대로 하려면 **배포 전용 계정을 새로 만들고** 그 계정에만 이 규칙을 준다.
+> 기본 계정에서 `NOPASSWD`를 빼는 방향은 **위험하다** — 그 계정에는 비밀번호가 설정돼 있지 않아
+> `sudo`가 존재하지 않는 비밀번호를 묻게 되고 **root 권한에서 영구히 잠긴다.**
+
 ```bash
 echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart atleti-news" | sudo tee /etc/sudoers.d/atleti-deploy
 sudo chmod 440 /etc/sudoers.d/atleti-deploy
@@ -154,107 +162,62 @@ journalctl -u atleti-news -f                        # 실시간 로그 (Ctrl+C�
 
 외부에서 실제 서비스 URL 열어서 정상 동작 확인까지 하면 2단계 완료.
 
-## 9. Nginx — WebSocket(채팅) 프록시 설정
+## 9. ~~Nginx — WebSocket(채팅) 프록시 설정~~ → **제거함 (2026-09-07)**
 
-> **실제 설정 파일은 [`infra/nginx-api.conf`](../infra/nginx-api.conf)에 있다.** 서버에 그대로 복사해 쓴다.
->
-> ## ⚠️ 2026-09-07 — 이 절의 전제가 틀렸다
->
-> **Nginx는 현재 운영 트래픽 경로에 없다.** `Cloudflare → Nginx(:80) → Spring(:8080)`이라고
-> 믿고 이 문서를 써 왔는데, `tcpdump`로 확인해 보니 **Cloudflare가 `:8080`에 직접 붙는다.**
->
-> ```
-> 162.158.139.26.12892 > 10.0.0.7.8080: Flags [S]    ← Cloudflare가 앱 포트로 직행
-> ```
->
-> Nginx 액세스 로그 넉 달치에 **실제 사용자 요청이 한 건도 없고** `/api/.git/config` 같은
-> 취약점 스캐너뿐이었다.
->
-> **따라서 아래 WebSocket 설정은 운영에 영향을 준 적이 없다.** 채팅은 Spring이 직접 처리해
-> 처음부터 정상이었다 (실제 경로 핸드셰이크 `101` 확인, SockJS `info`의 `"websocket": true`).
-> 2026-09-04에 이 설정을 적용하며 *"넉 달간 폴백으로 돌고 있었다"*고 적었던 것은 **오진이었다** —
-> `localhost:80`으로만 테스트하고 실제 트래픽 경로를 확인하지 않았다.
->
-> **이 착각의 대가:** *"앱 포트가 외부에 열려 있으니 막자"*는 판단으로 8080을 차단했다가
-> **정문을 잠근 셈이 되어 서비스가 4분간 끊겼다.**
->
-> **결정 대기:** Nginx를 실제 경로에 넣을지(Cloudflare를 `:80`으로), 걷어낼지.
-> 어느 쪽이든 **앱 포트는 Cloudflare에서 오는 것만 받게** 제한해야 한다.
+> **Nginx는 이 서버에서 제거했다.** 아래는 왜 있었고 왜 없앴는지의 기록이다.
 
-**한 줄 요약: 일반 HTTP 설정만 있으면 채팅 연결(`/ws`)이 프록시에서 끊긴다.**
+**있었던 이유** — 2026-05-04 초기 세팅 때 *"Spring Boot 배포 시 앞단에 Nginx 리버스 프록시를
+둔다"*는 일반적인 가이드를 따라 설치했다. 의도한 경로는 `Cloudflare → Nginx(:80) → Spring(:8080)`.
 
-WebSocket은 평범한 HTTP 요청으로 시작해서 "이 연결을 WebSocket으로 승격시켜 달라"는 `Upgrade` 헤더를 주고받으며 전환된다. Nginx는 기본적으로 이 헤더를 뒤로 전달하지 않으므로, 그냥 두면 승격이 실패하고 채팅만 연결되지 않는다 (일반 API는 멀쩡해서 원인을 찾기 어렵다).
+**그런데 그 경로로 트래픽이 흐른 적이 없다.** Cloudflare가 앱 포트(`:8080`)에 직접 붙고 있었다.
+앱을 먼저 띄우고 Cloudflare를 `:8080`에 연결한 뒤, 하루 뒤 Nginx를 설치하면서 **Cloudflare 쪽을
+`:80`으로 바꾸지 않은 것**으로 보인다.
 
-`/etc/nginx/sites-available/<사이트>` 의 `server { }` 안에 추가:
-
-```nginx
-# STOMP over WebSocket 핸드셰이크 경로 (SockJS 폴백 경로도 /ws 하위로 들어온다)
-location /ws {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_http_version 1.1;
-
-    # ① 연결 승격에 반드시 필요한 두 줄
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-
-    # ② 클라이언트 IP 전달 — rate limit·IP 차단·ipHash가 전부 이 값을 쓴다.
-    #    없으면 모든 접속자가 프록시 IP 하나로 보여 도배 방지가 사실상 무력화된다.
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Real-IP $remote_addr;
-
-    # ③ 유휴 타임아웃 — 기본 60초라 대화가 잠깐 끊기면 연결이 죽는다.
-    #    경기 한 판(전·후반 + 하프타임)을 덮도록 넉넉히 잡는다.
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-}
 ```
+믿고 있던 구조:  Cloudflare ──▶ :80 Nginx ──▶ :8080 Spring
+실제:           Cloudflare ─────────────────▶ :8080 Spring
+```
+
+**확인 방법 (같은 상황이 의심되면 이 순서로)**
 
 ```bash
-sudo nginx -t              # syntax is ok / test is successful 확인
-sudo systemctl reload nginx
+# ① 프록시가 실제 요청을 받고 있나 — 클라이언트 IP 분포를 본다
+sudo awk '{print $1}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head
+
+# ② 유입 패킷이 어느 포트로 오나
+sudo tcpdump -i any -nn 'tcp[tcpflags] & tcp-syn != 0 and dst port 8080'
+
+# ③ 앱에 붙은 연결의 상대가 127.0.0.1(프록시 경유)인가, 외부 IP(직결)인가
+sudo ss -tnp | grep java
 ```
 
-**완료 기준** — 핸드셰이크가 `101 Switching Protocols`로 응답하면 성공:
+넉 달치 액세스 로그에 **실제 사용자 요청이 한 건도 없었고** `/api/.git/config` 같은 취약점
+스캐너뿐이었다. `tcpdump`에는 `162.158.x.x → 10.0.0.7:8080` — Cloudflare가 앱 포트로 직행하는
+것이 그대로 찍혔다.
 
-```bash
-curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
-     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGVzdA==" \
-     https://<도메인>/ws/websocket
-```
+**없앤 이유** — Nginx가 주려던 것을 이미 다른 곳이 하고 있었다.
 
-`101`이 아니라 `200`/`400`이 오면 위 설정이 적용되지 않은 것이다.
+| Nginx로 하려던 것 | 실제로 하는 곳 |
+| --- | --- |
+| HTTPS 종료 | **Cloudflare** |
+| CDN · DDoS 방어 | **Cloudflare** |
+| `X-Forwarded-For` 전달 | **Cloudflare**가 직접 넣어 준다 |
+| 정적 파일 서빙 | **Vercel** |
+| 여러 서비스 라우팅 | 서비스가 **하나**뿐 |
 
-### 관리자 페이지 접근 제한 (선택, 권장)
+RAM 1GB에서 하는 일 없는 계층을 유지할 이유가 없었다. **제거 후 사용 메모리 498MB → 378MB**
+(워커 + `libgd` 등 의존성 포함). `:80`이 닫히면서 **스캐너 표적도 하나 줄었다.**
 
-채팅 관리자 페이지는 백엔드가 정적 파일로 서빙한다: **`https://<도메인>/admin-ec23cf19d466.html`**
+> **되돌리려면** — `sudo apt install nginx` 후 백업해 둔 설정을 복원한다
+> (`~/nginx-removal/etc-nginx-backup`, 서버에 보관). 그리고 **Cloudflare 쪽에서 오리진 포트를
+> `:80`으로 바꿔야** 실제로 경로에 들어간다. 그 설정을 안 바꾸면 이번과 똑같이 켜 두기만 하게 된다.
+>
+> **다시 필요해지는 조건** — 한 서버에 서비스가 둘 이상이 되어 경로 분기가 필요할 때,
+> 또는 앱 앞단에서 접근 제어·요청 제한을 걸어야 할 때.
 
-파일명이 추측 불가능하고 `noindex`가 걸려 있으며 모든 관리자 API가 `X-Admin-Key`로 잠겨 있어, 페이지가 노출돼도 키 없이는 아무것도 못 한다. 다만 **키를 무차별 대입할 기회조차 주고 싶지 않다면** Nginx에서 한 겹 더 막는다.
-
-```nginx
-# 관리자 페이지와 관리자 API를 아이디/비밀번호로 한 번 더 감싼다
-location ~ ^/(admin-ec23cf19d466\.html|api/admin/) {
-    auth_basic "restricted";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-```
-
-```bash
-sudo apt install -y apache2-utils
-sudo htpasswd -c /etc/nginx/.htpasswd admin   # 비밀번호 입력
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-> 주의: 이 설정을 켜면 `/api/admin/` 전체가 Basic 인증 뒤로 들어간다. 관리자 페이지는 브라우저가 인증 정보를 기억하므로 그대로 쓸 수 있지만, `curl`로 호출할 때는 `-u admin:<비번>`을 함께 넘겨야 한다.
-
-### Cloudflare를 앞단에 쓰는 경우
-
-- WebSocket은 **무료 플랜에서도 기본 활성화**되어 있다. 다만 대시보드 Network 탭에서 `WebSockets`가 On인지 한 번 확인할 것
-- 원본 IP는 Cloudflare가 `CF-Connecting-IP`로도 보내지만, 이 앱은 `X-Forwarded-For`의 첫 번째 값을 읽는다(`IpHandshakeInterceptor`). Cloudflare가 XFF에 원본 IP를 맨 앞에 넣어주므로 그대로 동작한다
-- 무료 플랜의 프록시 유휴 타임아웃은 100초다. SockJS 하트비트(25초)가 그 안에서 계속 오가므로 연결은 유지된다
+**남은 과제** — 앱 포트가 여전히 인터넷에 열려 있어, IP만 알면 **Cloudflare를 건너뛰고 앱에 직접
+닿을 수 있다.** Cloudflare IP 대역만 허용하도록 제한해야 한다. (앱 포트를 그냥 막으면 **정문을
+잠그는 것**이다 — 2026-09-07에 실제로 그렇게 해서 4분간 서비스가 끊겼다.)
 
 ## 10. 배포 전용 SSH 키 생성 (3단계 준비물)
 
@@ -290,6 +253,6 @@ ssh -i atleti-deploy-key ubuntu@<서버IP> "echo ok"
 | `systemctl restart` 시 비밀번호 요구 | 4번 sudoers 설정 확인 (`sudo visudo -c`) |
 | 메모리 부족으로 기동 실패 | 스왑 확인 `free -h` — 없으면 2번 항목의 스왑 2GB 생성 선행 |
 | 배포는 성공인데 채팅만 안 됨 | 십중팔구 Redis 미설치/미기동. `redis-cli ping`으로 확인 (2번 항목). 앱 로그에 `⚠️ Redis 연결 실패` 경고가 남는다 |
-| 채팅 연결이 계속 실패/재시도 | Nginx `/ws` 프록시 설정 확인 (9번 항목). `sudo nginx -T \| grep -A5 "location /ws"` |
-| 채팅이 1분쯤 뒤 끊김 | `proxy_read_timeout` 기본값(60초)에 걸린 것 — 9번 항목대로 3600s로 상향 |
-| 도배 방지가 안 걸림 / 모두가 같은 ipHash | 프록시가 `X-Forwarded-For`를 안 넘기는 상태. 9번 항목 ② 확인 |
+| 채팅 연결이 계속 실패/재시도 | Redis 확인이 먼저(위 항목). 프록시는 없다 — Cloudflare가 앱에 직접 붙는다 (9번 항목) |
+| 채팅이 1분쯤 뒤 끊김 | Cloudflare 무료 플랜의 프록시 유휴 타임아웃은 100초. SockJS 하트비트(25초)가 그 안에서 오가므로 정상이라면 유지된다 |
+| 도배 방지가 안 걸림 / 모두가 같은 ipHash | Cloudflare가 `X-Forwarded-For`에 원본 IP를 넣어 준다. 앱의 `ClientIp` 파싱과 `server.forward-headers-strategy=framework` 설정을 확인 |
