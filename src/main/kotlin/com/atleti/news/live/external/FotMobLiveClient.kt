@@ -206,20 +206,25 @@ class FotMobLiveClient(
      * 선수 교체. **네이버에는 이 데이터가 아예 없어서** 여기가 유일한 소스다 (2026-08-20 확인).
      *
      * ```json
-     * { "type": "Substitution", "time": 46, "isHome": true, "injuredPlayerOut": false,
-     *   "swap": [ {"name": "Marcos Llorente"}, {"name": "Jorge Domínguez"} ] }
+     * { "type": "Substitution", "time": 46, "isHome": true, "injuredPlayerOut": true,
+     *   "swap": [ {"name": "Aitor Paredes"}, {"name": "Yeray Álvarez"} ] }
      * ```
      *
-     * `swap`은 **[나가는 선수, 들어오는 선수] 순서**다. 둘 중 하나라도 이름이 비면 버린다 —
+     * `swap`은 **[들어오는 선수, 나가는 선수] 순서**다. 둘 중 하나라도 이름이 비면 버린다 —
      * 화살표 한쪽이 빈 채로 보드에 뜨는 것보다 아예 안 뜨는 게 낫다.
+     *
+     * **2026-09-09 수정 — 순서를 반대로 읽고 있었다.** 화면에 IN/OUT이 뒤집혀 나왔다.
+     * 2026-09-05 빌바오전(matchId=5868042) 응답의 교체 10건을 선발 명단과 대조해 확정했다:
+     * `swap[1]`이 10건 모두 선발 출전 선수였다(= 나가는 선수). 위 예시도 실제 응답이며,
+     * `Yeray Álvarez`가 홈 선발이고 `Aitor Paredes`가 교체 투입된 쪽이다.
      */
     private fun parseSubstitutions(events: JsonNode): List<LiveSubstitution> =
         events.asSequence()
             .filter { it.at("/type").asText() == "Substitution" }
             .mapNotNull { event ->
                 val swap = event.at("/swap")
-                val out = swap.at("/0/name").asText().takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val into = swap.at("/1/name").asText().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val into = swap.at("/0/name").asText().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val out = swap.at("/1/name").asText().takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 LiveSubstitution(
                     minute = event.at("/time").asInt(),
                     addedTime = event.at("/overloadTime").asInt(0),

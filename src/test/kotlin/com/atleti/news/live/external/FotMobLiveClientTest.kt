@@ -62,12 +62,12 @@ class FotMobLiveClientTest {
                       "teams": [ { "name": "Atletico Madrid", "score": 2 }, { "name": "Malaga", "score": 0 } ] },
           "content": { "matchFacts": { "events": { "events": [
             { "type": "Substitution", "time": 46, "overloadTime": null, "isHome": true,
-              "injuredPlayerOut": false,
-              "swap": [ { "name": "Marcos Llorente" }, { "name": "Jorge Domínguez" } ] },
-            { "type": "Card", "time": 50, "isHome": true, "player": { "name": "Koke" } },
-            { "type": "Substitution", "time": 61, "overloadTime": null, "isHome": false,
               "injuredPlayerOut": true,
-              "swap": [ { "name": "David Larrubia" }, { "name": "Chupe" } ] },
+              "swap": [ { "name": "Aitor Paredes" }, { "name": "Yeray Álvarez" } ] },
+            { "type": "Card", "time": 50, "isHome": true, "player": { "name": "Koke" } },
+            { "type": "Substitution", "time": 58, "overloadTime": null, "isHome": false,
+              "injuredPlayerOut": false,
+              "swap": [ { "name": "Arnau Ortiz" }, { "name": "Ademola Lookman" } ] },
             { "type": "Substitution", "time": 70, "overloadTime": null, "isHome": true,
               "swap": [ { "name": "" }, { "name": "Álex Baena" } ] }
           ] } } }
@@ -75,23 +75,28 @@ class FotMobLiveClientTest {
     """.trimIndent()
 
     @Test
-    @DisplayName("교체를 파싱한다 — swap은 [나가는 선수, 들어오는 선수] 순서다")
+    @DisplayName("교체를 파싱한다 — swap은 [들어오는 선수, 나가는 선수] 순서다")
     fun testParseSubstitutions() {
         val snapshot = client.parseSnapshot(subsResponse)
 
         // 카드는 섞여 와도 걸러지고, 이름이 빈 항목(70')은 버린다
         assertEquals(2, snapshot.substitutions.size)
 
+        // 픽스처는 2026-09-05 빌바오전(matchId=5868042) 실제 응답이다.
+        // Yeray Álvarez와 Ademola Lookman은 그 경기 선발 명단에 있었다 = 나가는 쪽.
+        // 지어낸 이름을 쓰면 순서를 반대로 적어도 테스트가 통과해 버린다.
         val first = snapshot.substitutions.first()
         assertEquals(46, first.minute)
-        assertEquals("Marcos Llorente", first.playerOut)
-        assertEquals("Jorge Domínguez", first.playerIn)
+        assertEquals("Yeray Álvarez", first.playerOut, "선발 출전 선수가 나간다")
+        assertEquals("Aitor Paredes", first.playerIn, "교체 명단 선수가 들어온다")
         assertTrue(first.isHome)
-        assertFalse(first.injury)
+        assertTrue(first.injury)
 
         val second = snapshot.substitutions[1]
+        assertEquals("Ademola Lookman", second.playerOut)
+        assertEquals("Arnau Ortiz", second.playerIn)
         assertFalse(second.isHome)
-        assertTrue(second.injury, "부상 교체는 injuredPlayerOut으로 구분된다")
+        assertFalse(second.injury, "부상 교체 여부는 injuredPlayerOut으로 구분된다")
     }
 
     @Test
