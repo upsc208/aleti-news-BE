@@ -30,132 +30,166 @@ class GeminiService(
         return callGeminiApi(title, fullContent, sourceName, skipValidation = skipValidation)
     }
 
+    /**
+     * 유튜브 라이브
+     */
     suspend fun processYoutubeTranscript(transcript: String, sourceName: String, spainDate: String): GeminiResponse? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
             log.warn("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
             return null
         }
 
-        val prompt = """
-            You are an expert Atletico Madrid journalist. 
-            Analyze the following Spanish YouTube transcript and respond ONLY in valid JSON.
+        val chunks = TranscriptChunker.split(TranscriptChunker.stripThemeSong(transcript))
+        if (chunks.isEmpty()) return null
+        log.info("🎙️ [$sourceName] 자막 ${transcript.length}자 → ${chunks.size}개 구간으로 나눠 번역")
 
-            CRITICAL RULES:
-            1. Filter out only pure "noise": greetings, sponsor mentions, channel promotion, chat small talk, and non-football jokes.
-            2. EVERYTHING ELSE must be covered. Do NOT compress the stream into a few highlights — translate ALL substantive football content (players, coach, transfers, match analysis, panel discussions, exclusive info), following the chronological flow of the stream.
-            3. If the content is empty or unrelated to Atletico Madrid, set "is_atm_related" to false.
+        val translations = mutableListOf<String>()
+        for ((index, chunk) in chunks.withIndex()) {
+            val raw = requestText(buildChunkTranslationPrompt(chunk, index, chunks.size), "유튜브 구간 ${index + 1}/${chunks.size}")
+                ?: return null
+            val translated = raw.trim().removePrefix("```").removeSuffix("```").trim()
+            if (translated.isEmpty() || translated == NOISE_ONLY) continue
+            translations += translated
+        }
 
-            [Faithful Translation - MOST IMPORTANT]
-            This is a STRICT literal translation task (직독직해). You are a translator, NOT an analyst or reporter.
-            1. Translate ONLY what is literally said in the [Transcript Content]. Do NOT add, infer, embellish, or "improve" anything.
-            2. NEVER use your own background knowledge to invent facts. Do NOT decide who is on the team, who left, or who is being signed. Just translate the words as they are.
-            3. If a player is only mentioned in passing, translate exactly that — do NOT turn a passing mention into a "transfer target" or "signing" story that the speaker never claimed.
-            4. Do NOT connect unrelated sentences into a fabricated narrative. Keep each statement's original meaning and scope.
-            5. If something is ambiguous or you are unsure, translate it plainly and literally rather than guessing an interpretation.
-            6. Absolutely no hallucination. It is far better to translate something dryly than to invent a claim the speaker did not make.
+        if (translations.isEmpty()) {
+            log.info("🔇 [$sourceName] 번역할 내용이 없음 (잡음만 있는 방송)")
+            return GeminiResponse(isAtmRelated = false, titleKo = null, contentKo = null, summaryKo = null)
+        }
 
-            [Speech Style - CRITICAL]
-            - 'content_ko': Write as a DIRECT TRANSLATION of what Ruben Uria actually says, as if he is speaking. Sentence endings MUST use Korean plain style (평어체): "~했다", "~이다", "~라고 본다", "~어떤가", "~준비했다". NEVER use formal endings here. Keep his first-person voice and rhetorical questions (e.g., "알마다의 사우디 이적설 관련 내용을 준비했다", "패널분들의 의견은 어떤가").
-            - 'summary_ko': This is the AI's own recap for the reader, NOT his direct speech. Use polite formal endings (존댓말: "~했습니다", "~입니다", "~전망입니다").
+        val contentKo = translations.joinToString("\n\n")
+        val meta = requestText(buildYoutubeSummaryPrompt(contentKo, spainDate), "유튜브 제목·요약")
+            ?.let { parseJson<YoutubeSummary>(it) }
+            ?: return null
 
-            [Naming Convention - CRITICAL]
-            Regardless of the source language (Spanish or English), ALWAYS use the following Korean names for these players/people:
-            - Antoine Griezmann: 앙투안 그리즈만
-            - Julián Álvarez: 훌리안 알바레스
-            - Marc Pubill: 마르크 푸빌
-            - Alexander Sørloth: 알렉산더 쇠를로트
-            - Robin Le Normand: 로빈 르 노르망
-            - Conor Gallagher: 코너 갤러거
-            - David Hancko: 다비드 한츠코
-            - Clement Lenglet: 클레망 랑글레
-            - Juan Musso: 후안 무소
-            - Diego Simeone: 디에고 시메오네
-            - Mateu Alemany: 마테우 알레마니
-            - Marcos Llorente: 마르코스 요렌테
-            - Jan Oblak: 얀 오블락
-            - Koke: 코케
-            - Jose Maria Gimenez: 호세 마리아 히메네스
-            - Pablo Barrios: 파블로 바리오스
-            - Thiago Almada: 티아고 알마다
-            - Johnny Cardoso: 조니 카르도소
-            - Ademola Lookman: 아데몰라 룩먼
-            - Giacomo Raspadori: 자코모 라스파도리
-            - Álex Baena: 알렉스 바에나
-            - Matteo Ruggeri: 마테오 루제리
-            - Nicolás González: 니콜라스 곤살레스
-            - Nahuel Molina: 나우엘 몰리나
-            - Rodrigo Mendoza: 로드리고 멘도사
-            - Obed Vargas: 오베드 바르가스
-            - Giuliano Simeone: 줄리아노 시메오네
-            - Miguel Llorente Cubo: 미켈 쿠보
-            - Javi Boñar: 하비 보냐르
-            - Javi Morcillo: 하비 모르시요
-            - Rayane Belaid: 리야드 벨라이드
-            - Adrián Niño: 아드리안 니뇨
-            - Salim El Jebari: 살림 엘 제바리
-            - Iker Luque: 이케르 루케
-            - Diego Bri: 디에고 브리
-            - Jorge Mota: 호르헤 모타
-            - Abde Raihani: 압데 라이하니
-            - Aitor Gismera: 아이토르 기스메라
-            - Gerónimo Spina: 헤로니모 스피나
-            - Ilias Kostis: 일리아스 코스티스
+        return GeminiResponse(
+            isAtmRelated = meta.isAtmRelated,
+            category = "라이브요약",
+            titleKo = "Ruben Uria) $spainDate 라이브 내용('${meta.topic.orEmpty().trim()}')",
+            summaryKo = meta.summaryKo,
+            contentKo = contentKo,
+        )
+    }
 
-            General Spanish/English-to-Korean rules:
-            1. 'J' at the beginning of names -> 'ㅎ' (e.g., Juan -> 후안, Julian -> 훌리안).
-            2. 'LL' -> 'ㄹ' or 'y' sound (e.g., Llorente -> 요렌테, Villar -> 비야르).
-            3. 'G' before 'e' or 'i' -> 'ㅎ' (e.g., Gimenez -> 히메네스).
-            4. Do not use English-style phonetics for Spanish names (e.g., NOT '그리에이츠만', NOT '줄리안').
+    private fun buildChunkTranslationPrompt(chunk: String, index: Int, total: Int): String {
+        return """
+            You are a Spanish-to-Korean translator. Translate segment ${index + 1} of $total of an automatically generated YouTube live transcript (Spanish football talk show).
 
-            [Transcript Content]
-            $transcript
+            WHAT TO DO
+            - Translate the segment into Korean sentence by sentence, in the exact order it is spoken.
+            - Drop only noise: the channel's theme song or jingle lyrics (e.g. "esto es el Atleti, nuestra pasión..."), greetings and goodbyes, sponsor or ad reads, requests to subscribe/like/join, reading out chat usernames or donations, small talk unrelated to football.
+            - Everything else is translated. Do not shorten, summarize, or pick highlights.
+            - The transcript has no punctuation and may contain speech-recognition errors. Split it into natural sentences. If a word is clearly mis-recognized, translate what was most plausibly said; if unclear, translate literally.
 
-            Instructions:
-            1. 'is_atm_related': true/false.
-            2. 'category': Always return "라이브요약".
-            3. 'title_ko': Create a title in the EXACT format: "Ruben Uria) $spainDate 라이브 내용('간략한 핵심 내용')".
-               - Use the provided date: $spainDate.
-               - '간략한 핵심 내용' MUST be extremely concise (Max 10-15 characters). Pick ONLY the single most important topic or two very short ones (e.g., "훌리안 이적설", "갤러거 협상 중"). Do not list everything.
-            4. 'summary_ko': Provide a 3-5 line concise summary. Use clear paragraph breaks (\n\n) between logical points for readability. Do not merge sentences into a single block. Use polite formal endings (존댓말: ~했습니다, ~입니다) — this is the AI's recap, not his direct speech.
-            5. 'content_ko': Provide a thorough, near-full translation of the stream in Korean (NOT just highlights).
-               - Cover ALL substantive football content in the order it was said. Only skip pure noise (greetings, sponsors, chat small talk, jokes). When in doubt, include it.
-               - CRITICAL: DO NOT use '#' headers or excessive bolding ('**').
-               - Use clean list markers like '-', '•', or emojis/icons.
-               - Use brackets (e.g., [이적 시장], [선수 분석]) to categorize sections.
-               - Ensure wide spacing between paragraphs so it's easy to read on mobile.
-               - Convey what Ruben Uria and the panel actually said, in his speaking voice. This should be the longest part.
-               - CRITICAL: End sentences in plain style as if directly transcribing his words (평어체: ~했다, ~준비했다, ~라고 본다, ~어떤가). NEVER use "~했습니다/~입니다".
+            WHAT NOT TO DO
+            - Do not add any fact, name, club, number, or opinion that is not in the segment. Do not use background knowledge about squads or transfers.
+            - Do not merge separate statements into a new claim. Do not turn a passing mention into a transfer story.
+            - Do not add headings, section labels, bullet points, introductions, or conclusions.
 
-            JSON structure:
-            {
-              "is_atm_related": true,
-              "category": "라이브요약",
-              "title_ko": "catchy title",
-              "summary_ko": "concise summary",
-              "content_ko": "detailed core report"
-            }
+            OUTPUT
+            - Plain Korean text only. No JSON, no markdown.
+            - Every sentence ends in written plain style "~다" (평어체), like a newspaper quote: ~했다, ~이다, ~라고 본다, ~할 것이다, questions as ~인가/~는가.
+              NEVER use polite endings (~습니다, ~요, ~죠) and NEVER use casual endings (~야, ~어, ~해, ~지).
+              e.g. "Hoy ganamos" → "오늘 우리가 이겼다." / "¿Qué os parece?" → "여러분은 어떻게 보는가?"
+            - Keep the speaker's first person and questions.
+            - One paragraph per topic change, separated by a blank line.
+            - If the entire segment is noise, output exactly: $NOISE_ONLY
+
+            Spanish names: initial J → ㅎ (Juan → 후안), LL → ㅇ/ㄹ (Llorente → 요렌테), G before e/i → ㅎ (Gimenez → 히메네스). Do not use English phonetics.
+            Nicknames: "Cholo" → 촐로, "Atleti" → 아틀레티.
+
+            [Segment]
+            $chunk
         """.trimIndent()
+    }
 
+    private fun buildYoutubeSummaryPrompt(contentKo: String, spainDate: String): String = """
+        Below is a Korean translation of a Spanish football YouTube live show ($spainDate). Respond ONLY in valid JSON.
+
+        Use ONLY what is written in the translation. Do not add names, facts, or context from background knowledge.
+
+        Fields:
+        - "is_atm_related": true if the show discusses Atletico Madrid at all, otherwise false.
+        - "topic": the single most discussed topic, 15 Korean characters or fewer, naming the concrete subject (a match, a player, a transfer) as written in the translation (e.g. "OO전 승리", "OO 이적설"). Generic labels like "경기 분석" are not allowed.
+        - "summary_ko": 3-5 sentences recapping the most-discussed points, separated by "\n\n". Polite style (~했습니다, ~입니다).
+          Each sentence must carry a concrete fact from the translation: who, which match, what result or claim.
+          No vague filler such as "분석을 공유했습니다", "논의가 이루어졌습니다", "소통하는 시간을 가졌습니다".
+          If two different matches are discussed, keep them distinct — do not attach a fact about one match to another.
+
+        [Translation]
+        $contentKo
+
+        JSON:
+        {"is_atm_related": true, "topic": "...", "summary_ko": "..."}
+    """.trimIndent()
+
+    private suspend fun requestText(prompt: String, label: String, retryCount: Int = 0): String? {
         return try {
             val requestBody = mapOf(
-                "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
+                "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt)))),
+                "generationConfig" to mapOf("temperature" to 0.2),
             )
-
             val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
 
-            webClient.post()
+            val response = webClient.post()
                 .uri(url)
                 .bodyValue(requestBody)
                 .retrieve()
                 .awaitBody<Map<String, Any>>()
-                .let { parseGeminiResponse(it) }
+            extractText(response) ?: run {
+                log.warn("⚠️ [$label] Gemini 응답에 본문이 없습니다: ${response.keys}")
+                null
+            }
+        } catch (e: WebClientResponseException) {
+            val status = e.statusCode.value()
+            if (status == 429 && retryCount < 2) {
+                val backoff = (retryCount + 1) * 10000L
+                log.warn("⚠️ [$label][Gemini 429] 할당량 초과. ${backoff / 1000}초 대기 후 재시도 (${retryCount + 1}/2)...")
+                delay(backoff)
+                return requestText(prompt, label, retryCount + 1)
+            } else if ((status == 503 || status == 500) && retryCount < 3) {
+                val backoff = (retryCount + 1) * 2000L
+                log.warn("⚠️ [$label][Gemini $status] 서버 바쁨. ${backoff / 1000}초 대기 후 재시도 (${retryCount + 1}/3)...")
+                delay(backoff)
+                return requestText(prompt, label, retryCount + 1)
+            }
+            log.error("❌ [$label] Gemini API HTTP 에러 ($status): ${e.responseBodyAsString}", e)
+            null
         } catch (e: Exception) {
-            log.error("❌ Gemini 유튜브 처리 오류: ${e.message}", e)
+            log.error("❌ [$label] Gemini 오류: ${e.message}", e)
             null
         }
     }
 
-    // 여러 최신 뉴스를 종합해 헤드라인 0~2개를 생성 (뉴스 헤드라인/속보 형태)
+    private fun extractText(response: Map<String, Any>): String? {
+        val candidates = response["candidates"] as? List<*> ?: return null
+        val firstCandidate = candidates.firstOrNull() as? Map<*, *> ?: return null
+        val content = firstCandidate["content"] as? Map<*, *> ?: return null
+        val parts = content["parts"] as? List<*> ?: return null
+        return parts.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
+            .joinToString("")
+            .ifBlank { null }
+    }
+
+    private inline fun <reified T> parseJson(text: String): T? = try {
+        val cleanJson = text.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            .replace(Regex("\\\\(?![u\"\\\\/bfnrt])"), "")
+        objectMapper.readValue<T>(cleanJson)
+    } catch (e: Exception) {
+        log.warn("⚠️ JSON 파싱 실패: ${e.message}", e)
+        null
+    }
+
+    internal data class YoutubeSummary(
+        @JsonProperty("is_atm_related") val isAtmRelated: Boolean = false,
+        @JsonProperty("topic") val topic: String? = null,
+        @JsonProperty("summary_ko") val summaryKo: String? = null,
+    )
+
+    companion object {
+        private const val NOISE_ONLY = "(없음)"
+    }
+
     suspend fun generateHeadlines(newsLines: List<String>, existingHeadlines: List<String>): List<String>? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
             log.warn("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
