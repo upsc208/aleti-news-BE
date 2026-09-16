@@ -45,9 +45,7 @@ class GeminiService(
 
         val translations = mutableListOf<String>()
         for ((index, chunk) in chunks.withIndex()) {
-            val raw = requestText(buildChunkTranslationPrompt(chunk, index, chunks.size), "유튜브 구간 ${index + 1}/${chunks.size}")
-                ?: return null
-            val translated = raw.trim().removePrefix("```").removeSuffix("```").trim()
+            val translated = translateChunk(chunk, index, chunks.size) ?: return null
             if (translated.isEmpty() || translated == NOISE_ONLY) continue
             translations += translated
         }
@@ -71,29 +69,75 @@ class GeminiService(
         )
     }
 
+    /**
+     * 구간 하나를 번역한다. 모델이 같은 말을 되풀이하다 끝나면 한 번 더 시켜 본다.
+     */
+    private suspend fun translateChunk(chunk: String, index: Int, total: Int): String? {
+        val label = "유튜브 구간 ${index + 1}/$total"
+        val prompt = buildChunkTranslationPrompt(chunk, index, total)
+
+        var result = RepetitionGuard.trimLoop(cleanChunkText(requestText(prompt, label) ?: return null))
+        if (result.looped) {
+            log.warn("⚠️ [$label] 번역이 '${result.repeatedUnit}' 반복에 빠졌습니다. 온도를 올려 다시 시도합니다.")
+            val retried = requestText(prompt, "$label 재시도", temperature = LOOP_RETRY_TEMPERATURE)
+            if (retried != null) {
+                val second = RepetitionGuard.trimLoop(cleanChunkText(retried))
+                if (!second.looped || second.text.length > result.text.length) result = second
+            }
+            if (result.looped) {
+                log.warn("⚠️ [$label] 다시 시도해도 반복이 남아 ${result.text.length}자까지만 싣습니다.")
+            }
+        }
+
+        val onTopic = OffTopicFilter.clean(result.text)
+        if (onTopic.dropped.isNotEmpty()) {
+            log.info("🧹 [$label] 광고·다른 종목 문단 ${onTopic.dropped.size}개를 뺐습니다: ${onTopic.dropped}")
+        }
+        return onTopic.text
+    }
+
+    private fun cleanChunkText(raw: String): String =
+        raw.trim().removePrefix("```").removeSuffix("```").trim()
+
     private fun buildChunkTranslationPrompt(chunk: String, index: Int, total: Int): String {
         return """
-            You are a Spanish-to-Korean translator. Translate segment ${index + 1} of $total of an automatically generated YouTube live transcript (Spanish football talk show).
+            You are a Korean sports editor working from a Spanish YouTube live show about Atletico Madrid.
+            This is segment ${index + 1} of $total of an automatically generated transcript. Condense it into readable Korean.
 
-            WHAT TO DO
-            - Translate the segment into Korean sentence by sentence, in the exact order it is spoken.
-            - Drop only noise: the channel's theme song or jingle lyrics (e.g. "esto es el Atleti, nuestra pasión..."), greetings and goodbyes, sponsor or ad reads, requests to subscribe/like/join, reading out chat usernames or donations, small talk unrelated to football.
-            - Everything else is translated. Do not shorten, summarize, or pick highlights.
-            - The transcript has no punctuation and may contain speech-recognition errors. Split it into natural sentences. If a word is clearly mis-recognized, translate what was most plausibly said; if unclear, translate literally.
+            KEEP (translate faithfully, close to the original wording)
+            - Anything about Atletico Madrid: the squad, the coach, the board, matches, injuries, line-ups, transfers, the youth team.
+            - Football elsewhere too: other clubs, other leagues, national teams, referees, the transfer market in general.
+            - Concrete facts: names, clubs, numbers, dates, scores, fees, contract terms, and what a speaker predicts or claims.
+            - The speakers' opinions and disagreements about Atletico, one or two sentences each.
 
-            WHAT NOT TO DO
-            - Do not add any fact, name, club, number, or opinion that is not in the segment. Do not use background knowledge about squads or transfers.
-            - Do not merge separate statements into a new claim. Do not turn a passing mention into a transfer story.
-            - Do not add headings, section labels, bullet points, introductions, or conclusions.
+            CUT
+            - Anything that is neither football nor about Atletico Madrid: other sports (F1, tennis, basketball), the hosts' private lives, current affairs.
+            - Sponsor reads, discount codes, giveaways, and anything else being sold.
+            - Greetings, goodbyes, subscribe/like requests, reading out viewer names or donations, jokes, banter.
+            - Filler and repetition: "eh", "bueno", false starts, and the same point made three times — keep it once.
+            - Rambling build-up. Give the point, not the runway to it.
+
+            LENGTH
+            - This segment is ${chunk.length} characters of Spanish. Write about $TARGET_CHARS characters of Korean, $MAX_CHARS at the very most.
+            - That is roughly a quarter of a full translation. Choose what matters instead of trimming every sentence evenly.
+
+            NEVER
+            - Do not add a fact, name, club, number, or opinion that is not in the segment. No background knowledge about squads or transfers.
+            - Do not turn a passing mention into a transfer story, and do not merge separate statements into a new claim.
+            - Do not add an introduction or a conclusion, markdown headings (#), bold (**), or bullet lists.
+            - Do not regroup the segment by theme. The paragraph labels describe what is there, in the order it was said.
 
             OUTPUT
             - Plain Korean text only. No JSON, no markdown.
-            - Every sentence ends in written plain style "~다" (평어체), like a newspaper quote: ~했다, ~이다, ~라고 본다, ~할 것이다, questions as ~인가/~는가.
+            - Keep the order in which things were said.
+            - 2-5 paragraphs separated by a blank line, one topic each. Keep a paragraph to 2-4 sentences.
+            - Open each paragraph with a short label in square brackets naming its topic, taken from what was actually said
+              (e.g. [오사수나전 라인업], [코케 기록], [바리오스 부상]). 8 Korean characters or fewer. Then a line break, then the paragraph.
+            - Lead with the point, then the detail. Keep sentences short — split any sentence that runs past about 60 characters.
+            - Every sentence ends in written plain style "~다" (평어체): ~했다, ~이다, ~라고 본다, ~할 것이다, questions as ~인가/~는가.
               NEVER use polite endings (~습니다, ~요, ~죠) and NEVER use casual endings (~야, ~어, ~해, ~지).
               e.g. "Hoy ganamos" → "오늘 우리가 이겼다." / "¿Qué os parece?" → "여러분은 어떻게 보는가?"
-            - Keep the speaker's first person and questions.
-            - One paragraph per topic change, separated by a blank line.
-            - If the entire segment is noise, output exactly: $NOISE_ONLY
+            - If the segment has no football content at all, output exactly: $NOISE_ONLY
 
             Spanish names: initial J → ㅎ (Juan → 후안), LL → ㅇ/ㄹ (Llorente → 요렌테), G before e/i → ㅎ (Gimenez → 히메네스). Do not use English phonetics.
             Nicknames: "Cholo" → 촐로, "Atleti" → 아틀레티.
@@ -123,11 +167,19 @@ class GeminiService(
         {"is_atm_related": true, "topic": "...", "summary_ko": "..."}
     """.trimIndent()
 
-    private suspend fun requestText(prompt: String, label: String, retryCount: Int = 0): String? {
+    private suspend fun requestText(
+        prompt: String,
+        label: String,
+        retryCount: Int = 0,
+        temperature: Double = DEFAULT_TEMPERATURE,
+    ): String? {
         return try {
             val requestBody = mapOf(
                 "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt)))),
-                "generationConfig" to mapOf("temperature" to 0.2),
+                "generationConfig" to mapOf(
+                    "temperature" to temperature,
+                    "maxOutputTokens" to MAX_OUTPUT_TOKENS,
+                ),
             )
             val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
 
@@ -146,12 +198,12 @@ class GeminiService(
                 val backoff = (retryCount + 1) * 10000L
                 log.warn("⚠️ [$label][Gemini 429] 할당량 초과. ${backoff / 1000}초 대기 후 재시도 (${retryCount + 1}/2)...")
                 delay(backoff)
-                return requestText(prompt, label, retryCount + 1)
+                return requestText(prompt, label, retryCount + 1, temperature)
             } else if ((status == 503 || status == 500) && retryCount < 3) {
                 val backoff = (retryCount + 1) * 2000L
                 log.warn("⚠️ [$label][Gemini $status] 서버 바쁨. ${backoff / 1000}초 대기 후 재시도 (${retryCount + 1}/3)...")
                 delay(backoff)
-                return requestText(prompt, label, retryCount + 1)
+                return requestText(prompt, label, retryCount + 1, temperature)
             }
             log.error("❌ [$label] Gemini API HTTP 에러 ($status): ${e.responseBodyAsString}", e)
             null
@@ -188,6 +240,19 @@ class GeminiService(
 
     companion object {
         private const val NOISE_ONLY = "(없음)"
+
+        /** 번역이라 낮게 둔다. 다만 너무 낮으면 같은 말을 되풀이하다 갇히는 일이 잦다 */
+        private const val DEFAULT_TEMPERATURE = 0.3
+
+        /** 되풀이에 빠진 구간을 다시 시킬 때 — 같은 자리에 다시 갇히지 않게 올린다 */
+        private const val LOOP_RETRY_TEMPERATURE = 0.9
+
+        /** 1만 자 구간의 정상 번역은 한국어 1만 자를 넘지 않는다. 그 두 배쯤에서 끊는다 */
+        private const val MAX_OUTPUT_TOKENS = 16384
+
+        /** 구간 하나를 옮길 목표 길이. 자막 1만 자 구간이 이 정도면 기사 전체가 1만 자 안팎이 된다 */
+        private const val TARGET_CHARS = 700
+        private const val MAX_CHARS = 1000
     }
 
     suspend fun generateHeadlines(newsLines: List<String>, existingHeadlines: List<String>): List<String>? {
