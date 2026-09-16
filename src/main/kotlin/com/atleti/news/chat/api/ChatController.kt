@@ -20,9 +20,6 @@ import org.springframework.web.bind.annotation.*
 
 /**
  * 방 정보 응답 (docs/redis-design.md 6.3): 오픈 여부 + 접속자 수 + 최근 메시지.
- *
- * [live]는 라이브 스코어보드용 스냅샷 (live-match-feed-design 6.2) — 자유 채팅방이거나
- * 네이버 경기 매핑 전이면 null이다. 프론트는 `if (room.live)`로 감싸 그리면 된다.
  */
 data class ChatRoomResponse(
     val open: Boolean,
@@ -42,7 +39,6 @@ class ChatController(
 
     /**
      * SEND /app/chat/{matchId} → 검증(방 오픈/내용/rate limit) 후 Redis 저장 + PUBLISH.
-     * IP는 핸드셰이크 때 IpHandshakeInterceptor가 세션에 넣어둔 값을 꺼낸다.
      */
     @MessageMapping("/chat/{matchId}")
     fun send(
@@ -53,13 +49,17 @@ class ChatController(
         val attributes = headerAccessor.sessionAttributes
         val ip = attributes?.get(ChatClient.IP_ATTRIBUTE) as? String ?: ClientIp.UNKNOWN
         val clientId = attributes?.get(ChatClient.SESSION_ATTRIBUTE) as? String
-        chatService.send(matchId, message.nickname, message.content, ip, clientId)
+        val admin = attributes?.get(ChatClient.ADMIN_ATTRIBUTE) == true
+
+        if (admin && message.content.startsWith(LED_COMMAND)) {
+            chatService.sendLedMessage(matchId, message.content.removePrefix(LED_COMMAND), ip)
+            return
+        }
+        chatService.send(matchId, message.nickname, message.content, ip, clientId, admin)
     }
 
     /**
-     * 정책 위반(닫힌 방, 도배 등) 시 — 방 전체가 아니라 "보낸 사람에게만" 에러 회신.
-     * 클라이언트는 /user/queue/errors를 구독해 받는다.
-     * code는 프론트가 사유별로 반응하기 위한 것 (NICKNAME_TAKEN이면 닉네임 모달 재오픈).
+     * 정책 위반(닫힌 방, 도배 등) 시 — 방 전체가 아니라 "보낸 사람에게만" 에러 보냄
      */
     @MessageExceptionHandler(ChatException::class)
     @SendToUser("/queue/errors", broadcast = false)
@@ -71,7 +71,6 @@ class ChatController(
 
     /**
      * 입장 시 방 정보 로딩용 REST — 오픈 여부, 접속자 수, 최근 메시지 100개.
-     * matchId는 경기 방이면 FotMob 숫자 ID, 자유 채팅방이면 "free" (ChatService.FREE_ROOM_ID).
      */
     @GetMapping("/api/chat/{matchId}")
     @ResponseBody
@@ -84,9 +83,7 @@ class ChatController(
         )
 
     /**
-     * 닉네임 사전 선점 REST — 선점 성공 시 200, 중복/금칙어/방닫힘 시 409 Conflict.
-     * 이미 내가 가진 이름이면 다시 불러도 200 (멱등) — 프론트가 저장해둔 닉네임으로
-     * 재입장할 때마다 호출해 "아직 내 이름이 맞는지" 확인하는 용도이기도 하다.
+     * 닉네임 사전 선점 REST — 선점 성공 시 200, 중복/금칙어/방닫힘 시 409 Conflict
      */
     @PostMapping("/api/chat/{matchId}/nickname")
     @ResponseBody
@@ -111,4 +108,9 @@ class ChatController(
             )
         }
     }
+
+    companion object {
+        const val LED_COMMAND = "/"
+    }
 }
+

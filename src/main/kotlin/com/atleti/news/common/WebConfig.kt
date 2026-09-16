@@ -4,13 +4,17 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Configuration
 import org.springframework.web.servlet.config.annotation.CorsRegistry
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
+import com.atleti.news.admin.AdminAuthInterceptor
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry
 
 /**
- * REST 요청의 CORS. 허용 출처는 [AllowedOrigins]가 단독으로 들고 있다 —
- * WebSocket 핸드셰이크도 같은 값을 봐야 한다.
+ * REST 요청의 CORS
  */
 @Configuration
-class WebConfig(private val allowedOrigins: AllowedOrigins) : WebMvcConfigurer {
+class WebConfig(
+    private val allowedOrigins: AllowedOrigins,
+    private val adminAuthInterceptor: AdminAuthInterceptor,
+) : WebMvcConfigurer {
 
     override fun addCorsMappings(registry: CorsRegistry) {
         registry.addMapping("/**")
@@ -19,19 +23,19 @@ class WebConfig(private val allowedOrigins: AllowedOrigins) : WebMvcConfigurer {
             .allowedHeaders("*")
             .allowCredentials(true)
     }
+
+    /**
+     * 관리자 API는 로그인 토큰이나 관리자 키가 있어야 통과한다.
+     */
+    override fun addInterceptors(registry: InterceptorRegistry) {
+        registry.addInterceptor(adminAuthInterceptor)
+            .addPathPatterns(AdminAuthInterceptor.PATH)
+            .excludePathPatterns(AdminAuthInterceptor.LOGIN_PATH)
+    }
 }
 
 /**
- * 브라우저에서 이 API를 부를 수 있는 출처 목록 (`atleti.web.allowed-origins`).
- *
- * **REST와 WebSocket이 반드시 같은 목록을 봐야 한다.** 따로 적어 두면 갈라진다 —
- * 실제로 REST는 도메인 다섯 개로 제한돼 있는데 WebSocket만 `"*"`로 열려 있었고,
- * 그 상태로 배포돼 있었다. 주석에는 "배포 전 제한 예정"이라고 적혀 있었다.
- *
- * `allowedOrigins`가 아니라 `allowedOriginPatterns`로 넘긴다. 정확한 문자열도 그대로
- * 동작하면서, 필요할 때 Vercel 프리뷰 같은 와일드카드 패턴을 **코드 변경 없이 설정만으로**
- * 더할 수 있다. `"*"` 하나만 넣는 것은 막는다 — 자격 증명을 허용하는 설정에서 전체 개방은
- * 의미가 없다.
+ * 브라우저에서 이 API를 부를 수 있는 출처 목록
  */
 @Configuration
 class AllowedOrigins(
