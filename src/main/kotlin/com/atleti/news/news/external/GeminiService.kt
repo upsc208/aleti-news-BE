@@ -55,7 +55,8 @@ class GeminiService(
             return GeminiResponse(isAtmRelated = false, titleKo = null, contentKo = null, summaryKo = null)
         }
 
-        val contentKo = translations.joinToString("\n\n")
+        val merged = RepetitionGuard.dropRepeatedParagraphs(translations.joinToString(PARAGRAPH_BREAK))
+        val contentKo = merged.text
         val meta = requestText(buildYoutubeSummaryPrompt(contentKo, spainDate), "유튜브 제목·요약")
             ?.let { parseJson<YoutubeSummary>(it) }
             ?: return null
@@ -70,30 +71,43 @@ class GeminiService(
     }
 
     /**
-     * 구간 하나를 번역한다. 모델이 같은 말을 되풀이하다 끝나면 한 번 더 시켜 본다.
+     * 구간 하나를 번역한다. 결과에 문제가 있으면 한 번 더~!
      */
     private suspend fun translateChunk(chunk: String, index: Int, total: Int): String? {
         val label = "유튜브 구간 ${index + 1}/$total"
         val prompt = buildChunkTranslationPrompt(chunk, index, total)
 
-        var result = RepetitionGuard.trimLoop(cleanChunkText(requestText(prompt, label) ?: return null))
-        if (result.looped) {
-            log.warn("⚠️ [$label] 번역이 '${result.repeatedUnit}' 반복에 빠졌습니다. 온도를 올려 다시 시도합니다.")
-            val retried = requestText(prompt, "$label 재시도", temperature = LOOP_RETRY_TEMPERATURE)
-            if (retried != null) {
-                val second = RepetitionGuard.trimLoop(cleanChunkText(retried))
-                if (!second.looped || second.text.length > result.text.length) result = second
-            }
-            if (result.looped) {
-                log.warn("⚠️ [$label] 다시 시도해도 반복이 남아 ${result.text.length}자까지만 싣습니다.")
-            }
-        }
+        val first = attempt(prompt, label, DEFAULT_TEMPERATURE) ?: return null
+        if (first.clean) return first.text
 
-        val onTopic = OffTopicFilter.clean(result.text)
+        log.warn("⚠️ [$label] ${first.problem} — 온도를 올려 다시 시도합니다.")
+        val second = attempt(prompt, "$label 재시도", LOOP_RETRY_TEMPERATURE) ?: return first.text
+        if (!second.clean) log.warn("⚠️ [$label] 다시 시도해도 남았습니다: ${second.problem}")
+
+        return if (second.clean || second.text.length > first.text.length) second.text else first.text
+    }
+
+    private suspend fun attempt(prompt: String, label: String, temperature: Double): Attempt? {
+        val raw = requestText(prompt, label, temperature = temperature) ?: return null
+        val guarded = guard(cleanChunkText(raw))
+
+        val onTopic = OffTopicFilter.clean(guarded.text)
         if (onTopic.dropped.isNotEmpty()) {
             log.info("🧹 [$label] 광고·다른 종목 문단 ${onTopic.dropped.size}개를 뺐습니다: ${onTopic.dropped}")
         }
-        return onTopic.text
+
+        val problem = guarded.repeatedUnit?.let { "'$it' 반복" }
+        return Attempt(onTopic.text, problem)
+    }
+
+    private data class Attempt(val text: String, val problem: String?) {
+        val clean: Boolean get() = problem == null
+    }
+
+    private fun guard(raw: String): RepetitionGuard.Result {
+        val trimmed = RepetitionGuard.trimLoop(raw)
+        val deduped = RepetitionGuard.dropRepeatedParagraphs(trimmed.text)
+        return RepetitionGuard.Result(deduped.text, trimmed.repeatedUnit ?: deduped.repeatedUnit)
     }
 
     private fun cleanChunkText(raw: String): String =
@@ -102,41 +116,43 @@ class GeminiService(
     private fun buildChunkTranslationPrompt(chunk: String, index: Int, total: Int): String {
         return """
             You are a Korean sports editor working from a Spanish YouTube live show about Atletico Madrid.
+            The show is a panel discussion: the host (Ruben Uria) and several panelists take turns talking.
             This is segment ${index + 1} of $total of an automatically generated transcript. Condense it into readable Korean.
 
             KEEP (translate faithfully, close to the original wording)
             - Anything about Atletico Madrid: the squad, the coach, the board, matches, injuries, line-ups, transfers, the youth team.
             - Football elsewhere too: other clubs, other leagues, national teams, referees, the transfer market in general.
             - Concrete facts: names, clubs, numbers, dates, scores, fees, contract terms, and what a speaker predicts or claims.
-            - The speakers' opinions and disagreements about Atletico, one or two sentences each.
+            - **Who says what.** This is a debate. When speakers disagree, keep both sides.
 
             CUT
-            - Anything that is neither football nor about Atletico Madrid: other sports (F1, tennis, basketball), the hosts' private lives, current affairs.
-            - Sponsor reads, discount codes, giveaways, and anything else being sold.
-            - Greetings, goodbyes, subscribe/like requests, reading out viewer names or donations, jokes, banter.
+            - Anything that is not football: film or product promotion, other sports, the hosts' private lives, current affairs.
+            - Greetings, goodbyes, sponsor reads, subscribe/like requests, reading out viewer names or donations, jokes, banter.
             - Filler and repetition: "eh", "bueno", false starts, and the same point made three times — keep it once.
-            - Rambling build-up. Give the point, not the runway to it.
 
             LENGTH
             - This segment is ${chunk.length} characters of Spanish. Write about $TARGET_CHARS characters of Korean, $MAX_CHARS at the very most.
-            - That is roughly a quarter of a full translation. Choose what matters instead of trimming every sentence evenly.
+            - Group the segment into 1-3 topics, not more. Merge related points into the same topic instead of splitting them.
+            - Each topic gets 4-8 sentences. A two-line topic means you split something that belongs together.
 
             NEVER
+            - Never repeat a sentence you already wrote. If you find yourself writing the same claim again, stop and move on.
+            - Never number a topic label to continue it ([OO 2], [OO 3]). One label, one topic, written once.
             - Do not add a fact, name, club, number, or opinion that is not in the segment. No background knowledge about squads or transfers.
             - Do not turn a passing mention into a transfer story, and do not merge separate statements into a new claim.
             - Do not add an introduction or a conclusion, markdown headings (#), bold (**), or bullet lists.
-            - Do not regroup the segment by theme. The paragraph labels describe what is there, in the order it was said.
 
             OUTPUT
             - Plain Korean text only. No JSON, no markdown.
-            - Keep the order in which things were said.
-            - 2-5 paragraphs separated by a blank line, one topic each. Keep a paragraph to 2-4 sentences.
-            - Open each paragraph with a short label in square brackets naming its topic, taken from what was actually said
-              (e.g. [오사수나전 라인업], [코케 기록], [바리오스 부상]). 8 Korean characters or fewer. Then a line break, then the paragraph.
-            - Lead with the point, then the detail. Keep sentences short — split any sentence that runs past about 60 characters.
+            - Keep the order in which things were said. Separate topics with a blank line.
+            - Open each topic with a short label in square brackets naming it, taken from what was actually said
+              (e.g. [오사수나전 리뷰], [코레아 부상]). 12 Korean characters or fewer, no numbers appended.
+            - Inside a topic, write it as the discussion it is. Name the speaker when the transcript makes it clear:
+              "루벤: …", "패널: …", "호르헤: …". When it is not clear who is speaking, write "한 패널은 …라고 본다".
             - Every sentence ends in written plain style "~다" (평어체): ~했다, ~이다, ~라고 본다, ~할 것이다, questions as ~인가/~는가.
               NEVER use polite endings (~습니다, ~요, ~죠) and NEVER use casual endings (~야, ~어, ~해, ~지).
-              e.g. "Hoy ganamos" → "오늘 우리가 이겼다." / "¿Qué os parece?" → "여러분은 어떻게 보는가?"
+              This applies to quoted speech too. Speakers talk politely on air, but write what they said in plain style:
+              "월드컵 일정 때문에 불이익을 받았습니다" → "패널: 월드컵 일정 때문에 불이익을 받았다."
             - If the segment has no football content at all, output exactly: $NOISE_ONLY
 
             Spanish names: initial J → ㅎ (Juan → 후안), LL → ㅇ/ㄹ (Llorente → 요렌테), G before e/i → ㅎ (Gimenez → 히메네스). Do not use English phonetics.
@@ -241,6 +257,9 @@ class GeminiService(
     companion object {
         private const val NOISE_ONLY = "(없음)"
 
+        /** 문단 구분 — 빈 줄 하나 */
+        private val PARAGRAPH_BREAK = "${Char(10)}${Char(10)}"
+
         /** 번역이라 낮게 둔다. 다만 너무 낮으면 같은 말을 되풀이하다 갇히는 일이 잦다 */
         private const val DEFAULT_TEMPERATURE = 0.3
 
@@ -251,8 +270,8 @@ class GeminiService(
         private const val MAX_OUTPUT_TOKENS = 16384
 
         /** 구간 하나를 옮길 목표 길이. 자막 1만 자 구간이 이 정도면 기사 전체가 1만 자 안팎이 된다 */
-        private const val TARGET_CHARS = 700
-        private const val MAX_CHARS = 1000
+        private const val TARGET_CHARS = 950
+        private const val MAX_CHARS = 1300
     }
 
     suspend fun generateHeadlines(newsLines: List<String>, existingHeadlines: List<String>): List<String>? {

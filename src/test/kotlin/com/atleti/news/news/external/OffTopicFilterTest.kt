@@ -31,6 +31,27 @@ class OffTopicFilterTest {
     }
 
     @Test
+    fun `영화 홍보 문단을 걷어낸다`() {
+        val text = "[오사수나전 리뷰]\n아틀레티코가 4-0으로 이겼다.\n\n" +
+            "[영화 홍보]\n10월 30일에 개봉하는 애니메이션을 소개했다. 진행자가 한 배역의 목소리를 맡았다고 밝혔다."
+
+        val result = OffTopicFilter.clean(text)
+
+        assertThat(result.text).isEqualTo("[오사수나전 리뷰]\n아틀레티코가 4-0으로 이겼다.")
+        assertThat(result.dropped).hasSize(1)
+    }
+
+    @Test
+    fun `선수 이름만 나열된 라인업 문단은 살린다`() {
+        val text = "[레알 마드리드전 예상 라인업]\n오블락, 요렌테, 르노르망, 쿠티 로메로, 갈란, 코케, 카르도소, 캉인, 바에나, 그리즈만, 조나단 데이비드."
+
+        val result = OffTopicFilter.clean(text)
+
+        assertThat(result.text).isEqualTo(text)
+        assertThat(result.dropped).isEmpty()
+    }
+
+    @Test
     fun `축구 얘기 중에 스친 다른 종목은 문단을 살린다`() {
         val text = "[일정 부담]\n선수들은 F1 경기를 보러 갈 시간도 없이 다음 경기를 준비한다."
 
