@@ -77,4 +77,17 @@ class RepetitionGuardTest {
         assertThat(RepetitionGuard.trimLoop(text).text).isEqualTo(text)
         assertThat(RepetitionGuard.dropRepeatedParagraphs(text).text).isEqualTo(text)
     }
+
+    @Test
+    fun `숫자가 다른 문단은 서로 다른 문단으로 본다`() {
+        val text = "[코케 기록]" + NEWLINE + "코케는 리그 3경기에 나섰다." + BREAK +
+            "[코케 기록]" + NEWLINE + "코케는 리그 5경기에 나섰다."
+
+        val result = RepetitionGuard.dropRepeatedParagraphs(text)
+
+        assertThat(result.text).isEqualTo(text)
+    }
+
+    private val NEWLINE = Char(10).toString()
+    private val BREAK = NEWLINE + NEWLINE
 }

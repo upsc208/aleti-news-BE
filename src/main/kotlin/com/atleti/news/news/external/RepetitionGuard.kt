@@ -15,11 +15,12 @@ object RepetitionGuard {
 
     private val SENTENCE_ENDINGS = charArrayOf('.', '!', '?', '\n')
 
-    /** 문단 앞머리 라벨 */
-    private val LABEL = Regex("^\\[[^\\]]*\\]")
+    private val WHITESPACE = Regex("""\s""")
 
-    /** 비교할 때 무시할 것 — 숫자와 공백. 라벨의 일련번호가 여기서 지워진다 */
-    private val IGNORED_WHEN_COMPARING = Regex("[0-9\\s]")
+    private val LABEL = Regex("""^\[[^\]]*\]""")
+
+    /** 라벨의 일련번호만 지운다. 본문 숫자까지 지우면 "3경기"와 "5경기"가 같은 문단이 된다 */
+    private val LABEL_NUMBER = Regex("""[0-9]""")
 
     data class Result(val text: String, val repeatedUnit: String?) {
         val looped: Boolean get() = repeatedUnit != null
@@ -94,6 +95,10 @@ object RepetitionGuard {
         return loopStart
     }
 
-    private fun comparisonKey(paragraph: String): String =
-        LABEL.replace(paragraph.trim(), "").replace(IGNORED_WHEN_COMPARING, "")
+    private fun comparisonKey(paragraph: String): String {
+        val trimmed = paragraph.trim()
+        val label = LABEL.find(trimmed)?.value.orEmpty()
+        val body = trimmed.removePrefix(label)
+        return LABEL_NUMBER.replace(label, "") + body.replace(WHITESPACE, "")
+    }
 }

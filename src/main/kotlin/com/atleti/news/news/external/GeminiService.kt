@@ -84,7 +84,9 @@ class GeminiService(
         val second = attempt(prompt, "$label 재시도", LOOP_RETRY_TEMPERATURE) ?: return first.text
         if (!second.clean) log.warn("⚠️ [$label] 다시 시도해도 남았습니다: ${second.problem}")
 
-        return if (second.clean || second.text.length > first.text.length) second.text else first.text
+        // 재시도가 "반복 없음"이어도 내용이 비어 있으면 첫 번역을 쓴다
+        val betterSecond = second.text.isNotBlank() && (second.clean || second.text.length > first.text.length)
+        return if (betterSecond) second.text else first.text
     }
 
     private suspend fun attempt(prompt: String, label: String, temperature: Double): Attempt? {
@@ -126,7 +128,6 @@ class GeminiService(
             - **Who says what.** This is a debate. When speakers disagree, keep both sides.
 
             CUT
-            - Anything that is not football: film or product promotion, other sports, the hosts' private lives, current affairs.
             - Greetings, goodbyes, sponsor reads, subscribe/like requests, reading out viewer names or donations, jokes, banter.
             - Filler and repetition: "eh", "bueno", false starts, and the same point made three times — keep it once.
 
@@ -145,8 +146,10 @@ class GeminiService(
             OUTPUT
             - Plain Korean text only. No JSON, no markdown.
             - Keep the order in which things were said. Separate topics with a blank line.
-            - Open each topic with a short label in square brackets naming it, taken from what was actually said
-              (e.g. [오사수나전 리뷰], [코레아 부상]). 12 Korean characters or fewer, no numbers appended.
+            - Open each topic with two brackets: a tag, then a short label taken from what was actually said.
+              The tag is ${OffTopicFilter.FOOTBALL_LABEL} when the topic is football, ${OffTopicFilter.OFF_TOPIC_LABEL} when it is not (a film, another sport, politics, the hosts' private lives).
+              Every topic carries one of the two — e.g. ${OffTopicFilter.FOOTBALL_LABEL}[오사수나전 리뷰], ${OffTopicFilter.OFF_TOPIC_LABEL}[영화 홍보].
+              The label itself is 12 Korean characters or fewer, with no numbers appended.
             - Inside a topic, write it as the discussion it is. Name the speaker when the transcript makes it clear:
               "루벤: …", "패널: …", "호르헤: …". When it is not clear who is speaking, write "한 패널은 …라고 본다".
             - Every sentence ends in written plain style "~다" (평어체): ~했다, ~이다, ~라고 본다, ~할 것이다, questions as ~인가/~는가.
