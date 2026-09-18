@@ -1,5 +1,7 @@
 package com.atleti.news.chat.api
 
+import com.atleti.news.admin.AdminAuthInterceptor
+import com.atleti.news.admin.AdminAuthService
 import com.atleti.news.chat.infra.ChatClient
 import com.atleti.news.common.ClientIp
 import com.atleti.news.chat.domain.ChatMessage
@@ -34,7 +36,8 @@ data class NicknameResponse(val nickname: String, val status: String = "RESERVED
 @Controller
 class ChatController(
     private val chatService: ChatService,
-    private val presenceTracker: ChatPresenceTracker
+    private val presenceTracker: ChatPresenceTracker,
+    private val adminAuth: AdminAuthService
 ) {
 
     /**
@@ -91,12 +94,13 @@ class ChatController(
         @PathVariable matchId: String,
         @RequestBody request: NicknameRequest,
         @RequestHeader(name = ChatClient.HTTP_HEADER, required = false) clientId: String?,
+        @RequestHeader(name = AdminAuthInterceptor.HEADER_TOKEN, required = false) adminToken: String?,
         httpRequest: HttpServletRequest
     ): ResponseEntity<Any> {
         val ip = ClientIp.of(httpRequest)
         return try {
             val reserved = chatService.reserveNicknamePublic(
-                matchId, request.nickname, ip, ChatClient.sanitize(clientId)
+                matchId, request.nickname, ip, ChatClient.sanitize(clientId), adminAuth.verify(adminToken)
             )
             ResponseEntity.ok(NicknameResponse(nickname = reserved))
         } catch (e: ChatException) {

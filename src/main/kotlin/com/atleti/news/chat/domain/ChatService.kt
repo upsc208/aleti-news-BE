@@ -174,10 +174,6 @@ class ChatService(
 
     /**
      * 입장 시 내려줄 라이브 스냅샷 (live-match-feed-design 6.2).
-     *
-     * 폴러가 5초마다 갱신해 둔 것을 **읽기만** 한다. 여기서 네이버를 직접 부르면
-     * 하프타임에 200명이 새로고침하는 순간 그대로 200번 호출이 된다 (설계 5.3).
-     * 자유 채팅방이거나 아직 매핑·폴링 전이면 null.
      */
     fun liveState(matchId: String): LiveMatchState? {
         if (isFreeRoom(matchId)) return null
@@ -193,10 +189,10 @@ class ChatService(
     /**
      * REST API용 닉네임 사전 선점/검증.
      */
-    fun reserveNicknamePublic(matchId: String, nickname: String, ip: String, clientId: String? = null): String {
+    fun reserveNicknamePublic(matchId: String, nickname: String, ip: String, clientId: String? = null, admin: Boolean = false): String {
         requireRoomOpen(matchId)
         requireNotBanned(ip)
-        val cleanNickname = validateNickname(nickname)
+        val cleanNickname = validateNickname(nickname, admin)
         return reserveNickname(matchId, cleanNickname, ip, clientId)
     }
 
