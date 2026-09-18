@@ -10,7 +10,15 @@ class AdminAuthServiceTest {
     private class MemoryAttempts : LoginAttempts {
         val counts = mutableMapOf<String, Long>()
         override fun fail(ip: String): Long = counts.merge(ip, 1L, Long::plus)!!
+        override fun failures(ip: String): Long = counts[ip] ?: 0L
         override fun clear(ip: String) { counts.remove(ip) }
+    }
+
+    /** Redis가 죽었을 때의 모습 — 세지도 못하고 예외도 삼킨다 */
+    private class BrokenAttempts : LoginAttempts {
+        override fun fail(ip: String) = 0L
+        override fun failures(ip: String) = 0L
+        override fun clear(ip: String) {}
     }
 
     private fun service(
@@ -42,15 +50,26 @@ class AdminAuthServiceTest {
     }
 
     @Test
-    fun `실패가 쌓이면 잠근다`() {
+    fun `실패가 쌓이면 비밀번호가 맞아도 막는다`() {
         val attempts = MemoryAttempts()
         val auth = service(attempts = attempts)
-        repeat(AdminAuthService.MAX_FAILURES.toInt() - 1) {
+        repeat(AdminAuthService.MAX_FAILURES.toInt()) {
             runCatching { auth.login("boss", "틀림", "1.2.3.4") }
         }
 
-        assertThatThrownBy { auth.login("boss", "틀림", "1.2.3.4") }
+        assertThatThrownBy { auth.login("boss", "derby-2026!", "1.2.3.4") }
             .hasMessageContaining("시도가 너무 많습니다")
+    }
+
+    @Test
+    fun `잠긴 IP가 아니면 그대로 들어간다`() {
+        val attempts = MemoryAttempts()
+        val auth = service(attempts = attempts)
+        repeat(AdminAuthService.MAX_FAILURES.toInt()) {
+            runCatching { auth.login("boss", "틀림", "1.2.3.4") }
+        }
+
+        assertThat(auth.verify(auth.login("boss", "derby-2026!", "5.6.7.8"))).isTrue()
     }
 
     @Test
@@ -65,6 +84,13 @@ class AdminAuthServiceTest {
     }
 
     @Test
+    fun `실패 횟수를 세지 못해도 로그인은 된다`() {
+        val auth = service(attempts = BrokenAttempts())
+
+        assertThat(auth.verify(auth.login("boss", "derby-2026!", "1.2.3.4"))).isTrue()
+    }
+
+    @Test
     fun `서명이 손상된 토큰은 통과하지 못한다`() {
         val auth = service()
         val token = auth.login("boss", "derby-2026!", "1.2.3.4")
@@ -76,10 +102,10 @@ class AdminAuthServiceTest {
     }
 
     @Test
-    fun `다른 비밀번호로 만든 토큰은 통과하지 못한다`() {
-        val token = service(password = "old-password-1").login("boss", "old-password-1", "1.2.3.4")
+    fun `다른 인스턴스가 만든 토큰은 통과하지 못한다`() {
+        val token = service().login("boss", "derby-2026!", "1.2.3.4")
 
-        assertThat(service(password = "new-password-2").verify(token)).isFalse()
+        assertThat(service().verify(token)).isFalse()
     }
 
     @Test

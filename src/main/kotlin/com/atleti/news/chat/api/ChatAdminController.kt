@@ -1,5 +1,7 @@
 package com.atleti.news.chat.api
 
+import com.atleti.news.admin.AdminAuthInterceptor
+import com.atleti.news.admin.AdminAuthService
 import com.atleti.news.chat.domain.ChatParticipant
 import com.atleti.news.chat.domain.ChatService
 import org.springframework.beans.factory.annotation.Value
@@ -16,17 +18,23 @@ import org.springframework.web.server.ResponseStatusException
 @RequestMapping("/api/admin/chat")
 class ChatAdminController(
     private val chatService: ChatService,
-    @Value("\${atleti.admin.key}") private val adminKey: String
+    @Value("\${atleti.admin.key}") private val adminKey: String,
+    private val adminAuth: AdminAuthService,
 ) {
-    private fun requireAdmin(key: String?) {
-        if (adminKey.isBlank() || key != adminKey) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "관리자 키가 올바르지 않습니다.")
+    /** 로그인 토큰이거나 예전부터 쓰던 관리자 키면 통과한다 */
+    private fun requireAdmin(key: String?, token: String?) {
+        val allowed = adminAuth.verify(token) || (adminKey.isNotBlank() && key == adminKey)
+        if (!allowed) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "관리자 인증이 필요합니다.")
         }
     }
 
     @GetMapping("/ban")
-    fun bannedList(@RequestHeader("X-Admin-Key", required = false) key: String?): Set<String> {
-        requireAdmin(key)
+    fun bannedList(
+        @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
+        @RequestHeader(AdminAuthInterceptor.HEADER_TOKEN, required = false) token: String?,
+    ): Set<String> {
+        requireAdmin(key, token)
         return chatService.bannedIps()
     }
 
@@ -37,29 +45,32 @@ class ChatAdminController(
      */
     @GetMapping("/{matchId}/participants")
     fun participants(
-        @RequestHeader("X-Admin-Key", required = false) key: String?,
+        @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
+        @RequestHeader(AdminAuthInterceptor.HEADER_TOKEN, required = false) token: String?,
         @PathVariable matchId: String
     ): List<ChatParticipant> {
-        requireAdmin(key)
+        requireAdmin(key, token)
         return chatService.participants(matchId)
     }
 
     @PostMapping("/ban")
     fun ban(
-        @RequestHeader("X-Admin-Key", required = false) key: String?,
+        @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
+        @RequestHeader(AdminAuthInterceptor.HEADER_TOKEN, required = false) token: String?,
         @RequestParam ip: String
     ): String {
-        requireAdmin(key)
+        requireAdmin(key, token)
         chatService.ban(ip)
         return "차단 완료: $ip"
     }
 
     @DeleteMapping("/ban")
     fun unban(
-        @RequestHeader("X-Admin-Key", required = false) key: String?,
+        @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
+        @RequestHeader(AdminAuthInterceptor.HEADER_TOKEN, required = false) token: String?,
         @RequestParam ip: String
     ): String {
-        requireAdmin(key)
+        requireAdmin(key, token)
         chatService.unban(ip)
         return "차단 해제: $ip"
     }

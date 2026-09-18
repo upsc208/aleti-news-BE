@@ -1,5 +1,8 @@
 package com.atleti.news.chat.api
 
+import com.atleti.news.admin.AdminAuthService
+import com.atleti.news.admin.LoginAttempts
+import org.springframework.mock.env.MockEnvironment
 import com.atleti.news.chat.domain.ChatParticipant
 import com.atleti.news.chat.domain.ChatService
 import org.junit.jupiter.api.BeforeEach
@@ -22,10 +25,17 @@ class ChatAdminControllerTest {
 
     private val validAdminKey = "test-secret-key"
 
+    /** 계정이 설정돼 있지 않으면 토큰은 항상 거절된다 — 키 검사만 남는다 */
+    private val adminAuth = AdminAuthService(MockEnvironment(), object : LoginAttempts {
+        override fun fail(ip: String) = 0L
+        override fun failures(ip: String) = 0L
+        override fun clear(ip: String) {}
+    })
+
     @BeforeEach
     fun setUp() {
         chatService = mock(ChatService::class.java)
-        val controller = ChatAdminController(chatService, validAdminKey)
+        val controller = ChatAdminController(chatService, validAdminKey, adminAuth)
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
             .setMessageConverters(
                 StringHttpMessageConverter(StandardCharsets.UTF_8),

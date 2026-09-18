@@ -4,19 +4,26 @@ import org.springframework.core.env.Environment
 import org.springframework.stereotype.Service
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.time.Instant
 import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlin.random.Random
 
+/** 로그인 실패 횟수 — 운영은 Redis, 테스트는 메모리 구현을 쓴다 */
 interface LoginAttempts {
     fun fail(ip: String): Long
+    fun failures(ip: String): Long
     fun clear(ip: String)
 }
 
 class AdminAuthException(message: String) : RuntimeException(message)
 
+/**
+ * 관리자 한 명만 쓰는 로그인. 스프링 시큐리티를 넣으면 기본값이 "전부 차단"이라
+ * 채팅·뉴스까지 한 번에 막혀서, 관리자 경로에만 붙는 토큰 검사로 대신한다.
+ */
 @Service
 class AdminAuthService(
     private val environment: Environment,
@@ -25,19 +32,25 @@ class AdminAuthService(
     private val username: String = property("atleti.admin.username")
     private val password: String = property("atleti.admin.password")
 
-    private val signingKey: ByteArray =
-        property("atleti.admin.token-secret").ifBlank { "$username:$password" }
-            .toByteArray(StandardCharsets.UTF_8)
+    /** 설정이 없으면 기동할 때마다 새로 만든다 — 비밀번호로 서명하면 토큰이 새는 순간 비밀번호도 샌다 */
+    private val signingKey: ByteArray = property("atleti.admin.token-secret")
+        .takeIf { it.isNotBlank() }
+        ?.toByteArray(StandardCharsets.UTF_8)
+        ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
 
     val enabled: Boolean = username.isNotBlank() && password.length >= MIN_PASSWORD_LENGTH
 
     fun login(inputUsername: String, inputPassword: String, ip: String): String {
         if (!enabled) throw AdminAuthException("관리자 계정이 설정되어 있지 않습니다.")
 
+        // 비밀번호를 대보기 전에 막아야 잠금이 의미가 있다
+        if (attempts.failures(ip) >= MAX_FAILURES) {
+            throw AdminAuthException("로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+        }
+
         val ok = constantTimeEquals(inputUsername, username) && constantTimeEquals(inputPassword, password)
         if (!ok) {
-            val failures = attempts.fail(ip)
-            if (failures >= MAX_FAILURES) throw AdminAuthException("로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+            attempts.fail(ip)
             throw AdminAuthException("아이디 또는 비밀번호가 올바르지 않습니다.")
         }
 
@@ -51,8 +64,7 @@ class AdminAuthService(
         if (parts.size != 2) return false
 
         val payload = parts[0]
-        val expectedSignature = sign(payload)
-        if (!constantTimeEquals(parts[1], expectedSignature)) return false
+        if (!constantTimeEquals(parts[1], sign(payload))) return false
 
         val expiresAt = decode(payload).substringBefore(":").toLongOrNull() ?: return false
         return Instant.now().epochSecond < expiresAt
@@ -79,6 +91,7 @@ class AdminAuthService(
 
     private fun property(key: String): String = environment.getProperty(key).orEmpty().trim()
 
+    /** 길이나 앞글자 비교 시간으로 정답을 좁혀 나가지 못하게 한다 */
     private fun constantTimeEquals(a: String, b: String): Boolean = MessageDigest.isEqual(
         a.toByteArray(StandardCharsets.UTF_8),
         b.toByteArray(StandardCharsets.UTF_8),
