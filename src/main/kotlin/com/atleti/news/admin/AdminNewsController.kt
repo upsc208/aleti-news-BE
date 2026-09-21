@@ -9,9 +9,7 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
-/**
- * 관리자만 허용되는 기사 관리
- */
+/* 관리자 기사 관리.*/
 @RestController
 @RequestMapping("/api/admin/news")
 class AdminNewsController(private val newsArticleRepository: NewsArticleRepository) {

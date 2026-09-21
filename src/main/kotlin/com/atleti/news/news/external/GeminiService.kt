@@ -11,6 +11,7 @@ import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.WebClientResponseException
 import org.springframework.web.reactive.function.client.awaitBody
 
+/* 기사와 유튜브 자막을 Gemini를 써 한국어 기사로 만드는 곳*/
 @Service
 class GeminiService(
     @Value("\${gemini.api.key}") private val rawApiKey: String,
@@ -30,9 +31,7 @@ class GeminiService(
         return callGeminiApi(title, fullContent, sourceName, skipValidation = skipValidation)
     }
 
-    /**
-     * 유튜브 라이브
-     */
+    // 유튜브 라이브: 자막을 구간으로 나눠 요약하고, 합친 결과로 제목과 요약을 만듦
     suspend fun processYoutubeTranscript(transcript: String, sourceName: String, spainDate: String): GeminiResponse? {
         if (apiKey == "NO_KEY" || apiKey.isBlank()) {
             log.warn("⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
@@ -70,9 +69,7 @@ class GeminiService(
         )
     }
 
-    /**
-     * 구간 하나를 번역한다. 결과에 문제가 있으면 한 번 더~!
-     */
+    // 구간 하나를 번역한다. 되풀이에 빠지면 한 번 더
     private suspend fun translateChunk(chunk: String, index: Int, total: Int): String? {
         val label = "유튜브 구간 ${index + 1}/$total"
         val prompt = buildChunkTranslationPrompt(chunk, index, total)
@@ -84,11 +81,11 @@ class GeminiService(
         val second = attempt(prompt, "$label 재시도", LOOP_RETRY_TEMPERATURE) ?: return first.text
         if (!second.clean) log.warn("⚠️ [$label] 다시 시도해도 남았습니다: ${second.problem}")
 
-        // 재시도가 "반복 없음"이어도 내용이 비어 있으면 첫 번역을 쓴다
         val betterSecond = second.text.isNotBlank() && (second.clean || second.text.length > first.text.length)
         return if (betterSecond) second.text else first.text
     }
 
+    // 축구와 관련 없으면 걸러야함
     private suspend fun attempt(prompt: String, label: String, temperature: Double): Attempt? {
         val raw = requestText(prompt, label, temperature = temperature) ?: return null
         val guarded = guard(cleanChunkText(raw))
@@ -186,6 +183,7 @@ class GeminiService(
         {"is_atm_related": true, "topic": "...", "summary_ko": "..."}
     """.trimIndent()
 
+    // Gemini 호출. 429와 5xx는 기다렸다 다시 시도
     private suspend fun requestText(
         prompt: String,
         label: String,
@@ -260,19 +258,14 @@ class GeminiService(
     companion object {
         private const val NOISE_ONLY = "(없음)"
 
-        /** 문단 구분 — 빈 줄 하나 */
         private val PARAGRAPH_BREAK = "${Char(10)}${Char(10)}"
 
-        /** 번역이라 낮게 둔다. 다만 너무 낮으면 같은 말을 되풀이하다 갇히는 일이 잦다 */
         private const val DEFAULT_TEMPERATURE = 0.3
 
-        /** 되풀이에 빠진 구간을 다시 시킬 때 — 같은 자리에 다시 갇히지 않게 올린다 */
         private const val LOOP_RETRY_TEMPERATURE = 0.9
 
-        /** 1만 자 구간의 정상 번역은 한국어 1만 자를 넘지 않는다. 그 두 배쯤에서 끊는다 */
         private const val MAX_OUTPUT_TOKENS = 16384
 
-        /** 구간 하나를 옮길 목표 길이. 자막 1만 자 구간이 이 정도면 기사 전체가 1만 자 안팎이 된다 */
         private const val TARGET_CHARS = 950
         private const val MAX_CHARS = 1300
     }
