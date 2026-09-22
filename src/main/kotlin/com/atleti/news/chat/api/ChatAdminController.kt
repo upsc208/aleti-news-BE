@@ -4,16 +4,15 @@ import com.atleti.news.admin.AdminAuthInterceptor
 import com.atleti.news.admin.AdminAuthService
 import com.atleti.news.chat.domain.ChatParticipant
 import com.atleti.news.chat.domain.ChatService
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 
-/**
- * 채팅 IP 차단 관리 (docs/redis-design.md 6.8).
- * X-Admin-Key 헤더가 서버의 ADMIN_KEY와 일치해야 호출 가능.
- * 키가 설정돼 있지 않으면 전부 거부 (기능 잠금 상태).
- */
+/* 채팅 참가자 조회와 IP 차단 */
+@Tag(name = "Admin Chat API", description = "관리자 채팅 참가자 조회 및 IP 차단 API")
 @RestController
 @RequestMapping("/api/admin/chat")
 class ChatAdminController(
@@ -21,7 +20,6 @@ class ChatAdminController(
     @Value("\${atleti.admin.key}") private val adminKey: String,
     private val adminAuth: AdminAuthService,
 ) {
-    /** 로그인 토큰이거나 예전부터 쓰던 관리자 키면 통과한다 */
     private fun requireAdmin(key: String?, token: String?) {
         val allowed = adminAuth.verify(token) || (adminKey.isNotBlank() && key == adminKey)
         if (!allowed) {
@@ -29,6 +27,7 @@ class ChatAdminController(
         }
     }
 
+    @Operation(summary = "차단 목록 조회", description = "현재 차단된 IP 전부를 돌려줍니다.")
     @GetMapping("/ban")
     fun bannedList(
         @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
@@ -38,11 +37,10 @@ class ChatAdminController(
         return chatService.bannedIps()
     }
 
-    /**
-     * 방 참가자 목록 — 닉네임/ipHash와 차단에 필요한 원본 IP를 함께 내려준다.
-     * 채팅 화면에는 ipHash 4자리만 보여서, 이 API 없이는 도배하는 사람을 찾아도
-     * 서버에 SSH로 들어가 redis-cli를 뒤져야 IP를 알 수 있었다.
-     */
+    @Operation(
+        summary = "방 참가자 목록",
+        description = "이 방에서 닉네임을 정한 사람들의 닉네임·ipHash와 차단에 필요한 원본 IP를 돌려줍니다."
+    )
     @GetMapping("/{matchId}/participants")
     fun participants(
         @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
@@ -53,6 +51,7 @@ class ChatAdminController(
         return chatService.participants(matchId)
     }
 
+    @Operation(summary = "IP 차단", description = "해당 IP의 채팅 전송과 입장을 막습니다. 관리자가 풀기 전까지 유지됩니다.")
     @PostMapping("/ban")
     fun ban(
         @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
@@ -64,6 +63,7 @@ class ChatAdminController(
         return "차단 완료: $ip"
     }
 
+    @Operation(summary = "IP 차단 해제", description = "차단 목록에서 해당 IP를 지웁니다.")
     @DeleteMapping("/ban")
     fun unban(
         @RequestHeader(AdminAuthInterceptor.HEADER_KEY, required = false) key: String?,
