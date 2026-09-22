@@ -24,6 +24,7 @@ class NewsPipelineService(
     private val youtubeService: YoutubeService,
     private val headlineService: HeadlineService,
     private val newsArticleRepository: NewsArticleRepository,
+    private val articleDeletionService: ArticleDeletionService,
     private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.keywords}") private val keywordString: String,
@@ -158,6 +159,7 @@ class NewsPipelineService(
         scrapingSemaphore: Semaphore
     ) {
         if (newsArticleRepository.existsByOriginalUrl(article.url)) return
+        if (articleDeletionService.isDeleted(article.url)) return
 
         val isTwitter = article.articleType == ArticleType.SNS_POST
         val isDedicatedMedia = article.sourceName == "Marca" || article.sourceName == "AS"

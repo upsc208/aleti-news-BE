@@ -1,10 +1,9 @@
 package com.atleti.news.news.api
 
-import com.atleti.news.news.api.dto.CollectionLogResponse
+import com.atleti.news.common.ClientIp
 import com.atleti.news.news.api.dto.NewsDetailResponse
 import com.atleti.news.news.api.dto.NewsListResponse
 import com.atleti.news.news.api.dto.NewsSourceResponse
-import com.atleti.news.news.domain.CollectionLogRepository
 import com.atleti.news.news.domain.NewsArticleRepository
 import com.atleti.news.news.domain.NewsSourceRepository
 import com.atleti.news.news.domain.ViewCountService
@@ -23,7 +22,6 @@ import java.time.OffsetDateTime
 class NewsController(
     private val newsArticleRepository: NewsArticleRepository,
     private val newsSourceRepository: NewsSourceRepository,
-    private val collectionLogRepository: CollectionLogRepository,
     private val viewCountService: ViewCountService
 ) {
 
@@ -38,15 +36,17 @@ class NewsController(
         @RequestParam(defaultValue = "false") isHyped: Boolean
     ): Page<NewsListResponse> {
         val lowerSources = sources?.map { it.lowercase() }
-        
+        val safePage = page.coerceAtLeast(0)
+        val safeSize = size.coerceIn(1, MAX_PAGE_SIZE)
+
         val articles = if (isHyped) {
             // 인기 기사: 최근 3일간 조회수 30회 이상인 기사 (조회수 높은 순 -> 최신순 정렬)
-            val pageable = PageRequest.of(page, size, Sort.by("viewCount").descending().and(Sort.by("publishedAt").descending()))
+            val pageable = PageRequest.of(safePage, safeSize, Sort.by("viewCount").descending().and(Sort.by("publishedAt").descending()))
             val threeDaysAgo = OffsetDateTime.now().minusDays(3)
             newsArticleRepository.searchHypedNews(30L, threeDaysAgo, lowerSources, category, pageable)
         } else {
             // 일반 목록: 최신순 정렬
-            val pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending())
+            val pageable = PageRequest.of(safePage, safeSize, Sort.by("publishedAt").descending())
             newsArticleRepository.searchNews(lowerSources, category, search, pageable)
         }
 
@@ -77,16 +77,11 @@ class NewsController(
     fun getNewsDetail(@PathVariable id: Long, request: HttpServletRequest): NewsDetailResponse {
         val article = newsArticleRepository.findById(id)
             .orElseThrow { NoSuchElementException("해당 기사를 찾을 수 없습니다. ID: $id") }
-        
-        // 조회수 증가 로직 (IP 기반 24시간 중복 방지 — Redis SETNX, docs/redis-design.md Phase 1)
-        val ip = request.getHeader("X-Forwarded-For")?.split(",")?.firstOrNull()?.trim()
-            ?: request.remoteAddr
 
-        if (viewCountService.tryMarkViewed(id, ip)) {
-            article.viewCount += 1
-            newsArticleRepository.save(article)
-        }
-        
+        // 올린 뒤 다시 읽지 않고 화면에 보일 값만 더한다
+        val counted = viewCountService.countView(id, ClientIp.of(request))
+        val viewCount = article.viewCount + if (counted) 1 else 0
+
         return NewsDetailResponse(
             id = article.id!!,
             titleKo = article.titleKo ?: "제목 없음",
@@ -99,17 +94,11 @@ class NewsController(
             publishedAt = article.publishedAt,
             articleType = article.articleType,
             category = article.category ?: "[기타]",
-            viewCount = article.viewCount
+            viewCount = viewCount
         )
     }
 
-    @Operation(summary = "수집 로그 조회", description = "뉴스 수집 배치 실행 기록을 확인합니다.")
-    @GetMapping("/logs")
-    fun getLogs(
-        @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "10") size: Int
-    ): Page<CollectionLogResponse> {
-        val pageable = PageRequest.of(page, size, Sort.by("createdAt").descending())
-        return collectionLogRepository.findAll(pageable).map { CollectionLogResponse.of(it) }
+    companion object {
+        private const val MAX_PAGE_SIZE = 100
     }
 }
