@@ -1,5 +1,7 @@
 package com.atleti.news.admin
 
+import com.atleti.news.admin.dto.LoginRequest
+import com.atleti.news.admin.dto.LoginResponse
 import com.atleti.news.common.ClientIp
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -11,9 +13,6 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-
-data class LoginRequest(val username: String = "", val password: String = "")
-data class LoginResponse(val token: String, val expiresInSeconds: Long)
 
 /* 관리자 로그인 */
 @Tag(name = "Admin Auth API", description = "관리자 로그인 및 세션 확인 API")

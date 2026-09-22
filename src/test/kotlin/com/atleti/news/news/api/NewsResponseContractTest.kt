@@ -1,5 +1,7 @@
 package com.atleti.news.news.api
 
+import com.atleti.news.news.api.dto.CollectionLogResponse
+import com.atleti.news.news.api.dto.NewsSourceResponse
 import com.atleti.news.news.domain.CollectionLog
 import com.atleti.news.news.domain.CollectionStatus
 import com.atleti.news.news.domain.NewsSource

@@ -2,10 +2,12 @@ package com.atleti.news.chat.api
 
 import com.atleti.news.admin.AdminAuthInterceptor
 import com.atleti.news.admin.AdminAuthService
+import com.atleti.news.chat.api.dto.ChatRoomResponse
+import com.atleti.news.chat.api.dto.NicknameRequest
+import com.atleti.news.chat.api.dto.NicknameResponse
 import com.atleti.news.chat.infra.ChatClient
 import com.atleti.news.common.ClientIp
 import com.atleti.news.chat.domain.ChatMessage
-import com.atleti.news.live.domain.LiveMatchState
 import com.atleti.news.chat.domain.ChatException
 import com.atleti.news.chat.infra.ChatPresenceTracker
 import com.atleti.news.chat.domain.ChatService
@@ -21,19 +23,6 @@ import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-
-/**
- * 방 정보 응답 (docs/redis-design.md 6.3): 오픈 여부 + 접속자 수 + 최근 메시지.
- */
-data class ChatRoomResponse(
-    val open: Boolean,
-    val onlineCount: Long,
-    val messages: List<ChatMessage>,
-    val live: LiveMatchState? = null
-)
-
-data class NicknameRequest(val nickname: String = "")
-data class NicknameResponse(val nickname: String, val status: String = "RESERVED")
 
 @Tag(name = "Chat API", description = "채팅방 입장 정보 조회 및 닉네임 선점 API (메시지 전송은 WebSocket)")
 @Controller
