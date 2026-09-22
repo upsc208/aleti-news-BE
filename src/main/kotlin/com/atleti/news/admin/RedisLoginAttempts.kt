@@ -5,7 +5,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Component
 import java.time.Duration
 
-/** Redis가 죽어도 로그인은 되어야 해서, 세는 데 실패하면 잠금만 포기하고 넘어간다 */
+/* 로그인 실패 횟수를 IP별로 카운트. if Redis가 죽으면 잠금만 포기하고 로그인은 통과*/
 @Component
 class RedisLoginAttempts(private val redis: StringRedisTemplate) : LoginAttempts {
     private val log = LoggerFactory.getLogger(RedisLoginAttempts::class.java)

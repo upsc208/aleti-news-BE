@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.servlet.HandlerInterceptor
 
+/* /api/admin (관리자 API)*/
 @Component
 class AdminAuthInterceptor(
     private val adminAuth: AdminAuthService,

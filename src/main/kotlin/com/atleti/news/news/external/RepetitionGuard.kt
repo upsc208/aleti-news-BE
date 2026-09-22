@@ -1,34 +1,21 @@
 package com.atleti.news.news.external
 
-/**
- * 모델이 같은 말을 되풀이한 부분을 걷어낸다.
- */
+/* 모델이 같은 말을 되풀이한 부분을 걷어냄.*/
 object RepetitionGuard {
-    /** 문단 구분 — 빈 줄 하나 */
     private val PARAGRAPH_BREAK = "${Char(10)}${Char(10)}"
-
-    /** 되풀이되는 조각의 최대 길이. 짧은 낱말부터 한 문장까지 본다 */
     private const val MAX_UNIT_LENGTH = 200
-
-    /** 같은 문단이 이만큼 연달아 나오면 모델이 갇힌 것으로 본다 */
     private const val LOOP_RUN = 3
 
     private val SENTENCE_ENDINGS = charArrayOf('.', '!', '?', '\n')
-
     private val WHITESPACE = Regex("""\s""")
-
     private val LABEL = Regex("""^\[[^\]]*\]""")
-
-    /** 라벨의 일련번호만 지운다. 본문 숫자까지 지우면 "3경기"와 "5경기"가 같은 문단이 된다 */
     private val LABEL_NUMBER = Regex("""[0-9]""")
 
     data class Result(val text: String, val repeatedUnit: String?) {
         val looped: Boolean get() = repeatedUnit != null
     }
 
-    /**
-     * 같은 조각이 연달아 되풀이되면 그 자리에서 잘라 낸다. 반복이 없으면 원문 그대로.
-     */
+    // 같은 조각이 연달아 되풀이되면 그 자리에서 잘라 냄
     fun trimLoop(text: String): Result {
         var i = 0
         while (i < text.length) {
@@ -54,9 +41,6 @@ object RepetitionGuard {
         return Result(text, null)
     }
 
-    /**
-     * 같은 내용의 문단을 하나만 남긴다.
-     */
     fun dropRepeatedParagraphs(text: String): Result {
         val seen = HashSet<String>()
         val kept = mutableListOf<String>()
@@ -87,6 +71,7 @@ object RepetitionGuard {
         else -> 4
     }
 
+    // 문장 중간에서 끊기지 않게 자를 자리를 문장 끝에 맞추게 함
     private fun cutPoint(text: String, loopStart: Int, unitLength: Int): Int {
         val unitEnd = minOf(loopStart + unitLength, text.length)
         for (i in loopStart until unitEnd) {
@@ -95,6 +80,7 @@ object RepetitionGuard {
         return loopStart
     }
 
+    // 라벨의 일련번호만 삭제
     private fun comparisonKey(paragraph: String): String {
         val trimmed = paragraph.trim()
         val label = LABEL.find(trimmed)?.value.orEmpty()

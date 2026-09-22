@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController
 data class LoginRequest(val username: String = "", val password: String = "")
 data class LoginResponse(val token: String, val expiresInSeconds: Long)
 
+/* 관리자 로그인*/
 @RestController
 @RequestMapping("/api/admin/auth")
 class AdminAuthController(private val adminAuth: AdminAuthService) {
@@ -26,7 +27,6 @@ class AdminAuthController(private val adminAuth: AdminAuthService) {
             ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf("error" to e.message))
         }
 
-     //토큰이 아직 살아 있는지 — 프론트가 새로고침 때 확인
     @GetMapping("/session")
     fun session(): Map<String, Boolean> = mapOf("valid" to true)
 }

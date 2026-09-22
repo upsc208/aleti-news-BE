@@ -1,17 +1,12 @@
 package com.atleti.news.news.external
 
-/**
- * 긴 자막을 번역 요청 단위로 자른다. 순서를 지키고 단어 중간에서 끊지 않는다.
- */
+/* 유튜브 긴 자막을 번역 요청 단위로 커팅. */
 object TranscriptChunker {
     const val DEFAULT_MAX_CHARS = 10_000
 
     private val THEME_SONG_CHORUS = Regex("nuestra pasi[oó]n", RegexOption.IGNORE_CASE)
     private const val THEME_SONG_WINDOW = 5_000
 
-    /**
-     * 방송 앞뒤에 나오는 채널 주제가 가사를 자르게!.
-     */
     fun stripThemeSong(transcript: String): String {
         val half = transcript.length / 2
         var start = 0
