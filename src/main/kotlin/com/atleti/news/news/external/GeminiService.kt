@@ -4,7 +4,10 @@ import org.slf4j.LoggerFactory
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
@@ -15,11 +18,14 @@ import org.springframework.web.reactive.function.client.awaitBody
 @Service
 class GeminiService(
     @Value("\${gemini.api.key}") private val rawApiKey: String,
+    @Value("\${gemini.api.model}") private val model: String,
+    @Value("\${gemini.api.base-url}") private val baseUrl: String,
     private val objectMapper: ObjectMapper
 ) {
     private val log = LoggerFactory.getLogger(GeminiService::class.java)
 
     private val apiKey = rawApiKey.trim()
+    private val endpoint = "${baseUrl.trimEnd('/')}/v1/models/$model:generateContent"
     private val webClient = WebClient.builder().build()
 
     suspend fun processArticle(title: String, fullContent: String, sourceName: String, skipValidation: Boolean = false): GeminiResponse? {
@@ -183,6 +189,16 @@ class GeminiService(
         {"is_atm_related": true, "topic": "...", "summary_ko": "..."}
     """.trimIndent()
 
+    private suspend fun callGemini(requestBody: Map<String, Any>): Map<String, Any> =
+        withTimeout(REQUEST_TIMEOUT_MS) {
+            webClient.post()
+                .uri(endpoint)
+                .header(API_KEY_HEADER, apiKey)
+                .bodyValue(requestBody)
+                .retrieve()
+                .awaitBody<Map<String, Any>>()
+        }
+
     // Gemini 호출. 429와 5xx는 기다렸다 다시 시도
     private suspend fun requestText(
         prompt: String,
@@ -198,13 +214,7 @@ class GeminiService(
                     "maxOutputTokens" to MAX_OUTPUT_TOKENS,
                 ),
             )
-            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
-
-            val response = webClient.post()
-                .uri(url)
-                .bodyValue(requestBody)
-                .retrieve()
-                .awaitBody<Map<String, Any>>()
+            val response = callGemini(requestBody)
             extractText(response) ?: run {
                 log.warn("⚠️ [$label] Gemini 응답에 본문이 없습니다: ${response.keys}")
                 null
@@ -224,6 +234,11 @@ class GeminiService(
             }
             log.error("❌ [$label] Gemini API HTTP 에러 ($status): ${e.responseBodyAsString}", e)
             null
+        } catch (e: TimeoutCancellationException) {
+            log.error("❌ [$label] Gemini 응답 시간 초과 (${REQUEST_TIMEOUT_MS}ms)")
+            null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.error("❌ [$label] Gemini 오류: ${e.message}", e)
             null
@@ -256,6 +271,10 @@ class GeminiService(
     )
 
     companion object {
+        private const val API_KEY_HEADER = "x-goog-api-key"
+
+        private const val REQUEST_TIMEOUT_MS = 120_000L
+
         private const val NOISE_ONLY = "(없음)"
 
         private val PARAGRAPH_BREAK = "${Char(10)}${Char(10)}"
@@ -321,14 +340,12 @@ class GeminiService(
             val requestBody = mapOf(
                 "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
             )
-            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
-
-            webClient.post()
-                .uri(url)
-                .bodyValue(requestBody)
-                .retrieve()
-                .awaitBody<Map<String, Any>>()
-                .let { parseHeadlineResponse(it) }
+            callGemini(requestBody).let { parseHeadlineResponse(it) }
+        } catch (e: TimeoutCancellationException) {
+            log.error("❌ [헤드라인] Gemini 응답 시간 초과 (${REQUEST_TIMEOUT_MS}ms)")
+            null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.error("❌ Gemini 헤드라인 생성 오류: ${e.message}", e)
             null
@@ -457,14 +474,7 @@ class GeminiService(
                 "contents" to listOf(mapOf("parts" to listOf(mapOf("text" to prompt))))
             )
 
-            val url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent?key=$apiKey"
-
-            webClient.post()
-                .uri(url)
-                .bodyValue(requestBody)
-                .retrieve()
-                .awaitBody<Map<String, Any>>()
-                .let { parseGeminiResponse(it) }
+            callGemini(requestBody).let { parseGeminiResponse(it) }
         } catch (e: WebClientResponseException) {
             if (e.statusCode.value() == 429 && retryCount < 2) {
                 val backoff = (retryCount + 1) * 10000L
@@ -480,6 +490,11 @@ class GeminiService(
 
             log.error("❌ Gemini API HTTP 에러 (${e.statusCode}): ${e.responseBodyAsString}", e)
             null
+        } catch (e: TimeoutCancellationException) {
+            log.error("❌ Gemini 응답 시간 초과 (${REQUEST_TIMEOUT_MS}ms)")
+            null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.error("❌ Gemini 오류: ${e.message}", e)
             null

@@ -1,8 +1,11 @@
 package com.atleti.news.news.domain
 
 import org.slf4j.LoggerFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.jsoup.Jsoup
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
@@ -108,16 +111,28 @@ class YoutubeService(
      * 여기서만 SerpApi 쿼터를 1회 쓴다 — 그래서 중복 체크를 통과한 뒤에 부른다.
      */
     private suspend fun fetchTranscript(videoId: String): String? = withContext(Dispatchers.IO) {
+        val url = "https://serpapi.com/search.json?engine=youtube_video_transcript&v=$videoId&api_key=$serpApiKey"
         try {
-            val url = "https://serpapi.com/search.json?engine=youtube_video_transcript&v=$videoId&api_key=$serpApiKey"
-            joinTranscript(webClient.get().uri(url).retrieve().awaitBody<Map<String, Any>>())
+            withTimeout(TRANSCRIPT_TIMEOUT_MS) {
+                joinTranscript(webClient.get().uri(url).retrieve().awaitBody<Map<String, Any>>())
+            }
+        } catch (e: TimeoutCancellationException) {
+            log.error("❌ 트랜스크립트 응답 시간 초과 (${TRANSCRIPT_TIMEOUT_MS}ms)")
+            null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            log.error("❌ 트랜스크립트 추출 실패: ${e.message}", e)
+            log.error("❌ 트랜스크립트 추출 실패: ${hideKey(e.message)}")
             null
         }
     }
 
+    private fun hideKey(message: String?): String =
+        message.orEmpty().replace(serpApiKey, "***")
+
     companion object {
+        private const val TRANSCRIPT_TIMEOUT_MS = 60_000L
+
         internal const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
