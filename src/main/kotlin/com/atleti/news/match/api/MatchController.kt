@@ -28,9 +28,4 @@ class MatchController(
         return footballDataService.getUpcomingMatches()
     }
 
-    @Operation(summary = "[테스트용] 경기 정보 강제 동기화", description = "백그라운드가 아닌 즉시 API를 호출하여 데이터를 업데이트합니다.")
-    @GetMapping("/sync")
-    suspend fun syncMatches(): String {
-        return footballDataService.syncUpdate()
-    }
 }

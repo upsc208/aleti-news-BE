@@ -41,3 +41,7 @@ out/
 .env
 data/
 
+
+# Claude Code
+CLAUDE.md
+.claude/

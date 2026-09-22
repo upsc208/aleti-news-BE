@@ -8,7 +8,6 @@ import com.atleti.news.news.domain.NewsArticle
 import com.atleti.news.news.domain.CollectionLogRepository
 import com.atleti.news.news.domain.NewsArticleRepository
 import com.atleti.news.news.domain.NewsSourceRepository
-import com.atleti.news.news.domain.NewsPipelineService
 import com.atleti.news.news.domain.ViewCountService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -26,8 +25,7 @@ class NewsController(
     private val newsArticleRepository: NewsArticleRepository,
     private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
-    private val viewCountService: ViewCountService,
-    private val newsPipelineService: NewsPipelineService
+    private val viewCountService: ViewCountService
 ) {
 
     @Operation(summary = "뉴스 목록 조회 (필터링 및 검색 포함)", description = "뉴스 목록을 가져옵니다. 소스 리스트, 카테고리, 그리고 검색어(제목/본문) 필터링이 가능합니다.")
@@ -114,12 +112,6 @@ class NewsController(
     ): Page<CollectionLogResponse> {
         val pageable = PageRequest.of(page, size, Sort.by("createdAt").descending())
         return collectionLogRepository.findAll(pageable).map { CollectionLogResponse.of(it) }
-    }
-
-    @Operation(summary = "배치 수동 실행", description = "뉴스 수집 파이프라인을 즉시 실행합니다.")
-    @PostMapping("/trigger")
-    fun triggerPipeline() {
-        newsPipelineService.runPipeline()
     }
 }
 
