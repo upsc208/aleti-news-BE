@@ -3,6 +3,7 @@ package com.atleti.news.news.domain
 import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
 import java.time.Duration
 
 /**
@@ -11,8 +12,19 @@ import java.time.Duration
  * Redis SETNX + 24h TTL 한 번으로 대체한다.
  */
 @Service
-class ViewCountService(private val redis: StringRedisTemplate) {
+class ViewCountService(
+    private val redis: StringRedisTemplate,
+    private val newsArticleRepository: NewsArticleRepository,
+) {
     private val log = LoggerFactory.getLogger(ViewCountService::class.java)
+
+    // 읽어서 더하고 저장하면 동시 조회에서 서로의 증가를 덮어쓴다
+    @Transactional
+    fun countView(articleId: Long, ip: String): Boolean {
+        if (!tryMarkViewed(articleId, ip)) return false
+        newsArticleRepository.increaseViewCount(articleId)
+        return true
+    }
 
     /**
      * 이 IP가 이 기사를 24시간 내 처음 보는지 원자적으로 판정.

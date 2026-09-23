@@ -2,13 +2,17 @@ package com.atleti.news.chat.api
 
 import com.atleti.news.admin.AdminAuthInterceptor
 import com.atleti.news.admin.AdminAuthService
+import com.atleti.news.chat.api.dto.ChatRoomResponse
+import com.atleti.news.chat.api.dto.NicknameRequest
+import com.atleti.news.chat.api.dto.NicknameResponse
 import com.atleti.news.chat.infra.ChatClient
 import com.atleti.news.common.ClientIp
 import com.atleti.news.chat.domain.ChatMessage
-import com.atleti.news.live.domain.LiveMatchState
 import com.atleti.news.chat.domain.ChatException
 import com.atleti.news.chat.infra.ChatPresenceTracker
 import com.atleti.news.chat.domain.ChatService
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.messaging.handler.annotation.DestinationVariable
 import org.springframework.messaging.handler.annotation.MessageExceptionHandler
 import org.springframework.messaging.handler.annotation.MessageMapping
@@ -20,19 +24,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
-/**
- * 방 정보 응답 (docs/redis-design.md 6.3): 오픈 여부 + 접속자 수 + 최근 메시지.
- */
-data class ChatRoomResponse(
-    val open: Boolean,
-    val onlineCount: Long,
-    val messages: List<ChatMessage>,
-    val live: LiveMatchState? = null
-)
-
-data class NicknameRequest(val nickname: String = "")
-data class NicknameResponse(val nickname: String, val status: String = "RESERVED")
-
+@Tag(name = "Chat API", description = "채팅방 입장 정보 조회 및 닉네임 선점 API (메시지 전송은 WebSocket)")
 @Controller
 class ChatController(
     private val chatService: ChatService,
@@ -40,9 +32,7 @@ class ChatController(
     private val adminAuth: AdminAuthService
 ) {
 
-    /**
-     * SEND /app/chat/{matchId} → 검증(방 오픈/내용/rate limit) 후 Redis 저장 + PUBLISH.
-     */
+    // 검증(방 오픈·내용·도배) 후 Redis 저장과 발행
     @MessageMapping("/chat/{matchId}")
     fun send(
         @DestinationVariable matchId: String,
@@ -61,9 +51,7 @@ class ChatController(
         chatService.send(matchId, message.nickname, message.content, ip, clientId, admin)
     }
 
-    /**
-     * 정책 위반(닫힌 방, 도배 등) 시 — 방 전체가 아니라 "보낸 사람에게만" 에러 보냄
-     */
+    // 정책 위반 안내는 방 전체가 아니라 보낸 사람에게만
     @MessageExceptionHandler(ChatException::class)
     @SendToUser("/queue/errors", broadcast = false)
     fun handleChatError(e: ChatException): Map<String, String> =
@@ -72,9 +60,7 @@ class ChatController(
             "code" to e.code
         )
 
-    /**
-     * 입장 시 방 정보 로딩용 REST — 오픈 여부, 접속자 수, 최근 메시지 100개.
-     */
+    @Operation(summary = "방 정보 조회", description = "오픈 여부, 접속자 수, 최근 메시지 100개, 라이브 스냅샷을 함께 돌려줍니다.")
     @GetMapping("/api/chat/{matchId}")
     @ResponseBody
     fun roomInfo(@PathVariable matchId: String): ChatRoomResponse =
@@ -85,9 +71,7 @@ class ChatController(
             live = chatService.liveState(matchId)
         )
 
-    /**
-     * 닉네임 사전 선점 REST — 선점 성공 시 200, 중복/금칙어/방닫힘 시 409 Conflict
-     */
+    @Operation(summary = "닉네임 선점", description = "입장 전에 닉네임을 먼저 잡습니다. 중복·금칙어·닫힌 방이면 409입니다.")
     @PostMapping("/api/chat/{matchId}/nickname")
     @ResponseBody
     fun reserveNickname(

@@ -1,6 +1,9 @@
 package com.atleti.news.rating.api
 
-import com.atleti.news.rating.domain.PlayerRatingResponse
+import com.atleti.news.common.ClientIp
+import com.atleti.news.rating.api.dto.PlayerRatingRequest
+import com.atleti.news.rating.api.dto.PlayerRatingResponse
+import com.atleti.news.rating.api.dto.toResponse
 import com.atleti.news.rating.domain.PlayerRatingService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -20,7 +23,7 @@ class PlayerRatingController(
     )
     @GetMapping
     fun getRatings(@PathVariable matchId: String, request: HttpServletRequest): List<PlayerRatingResponse> {
-        return playerRatingService.getRatings(matchId, clientIp(request))
+        return playerRatingService.getRatings(matchId, ClientIp.of(request)).map { it.toResponse() }
     }
 
     @Operation(
@@ -33,14 +36,6 @@ class PlayerRatingController(
         @RequestBody req: PlayerRatingRequest,
         request: HttpServletRequest
     ): PlayerRatingResponse {
-        return playerRatingService.submitRating(matchId, req.playerName, req.score, clientIp(request))
+        return playerRatingService.submitRating(matchId, req.playerName, req.score, ClientIp.of(request)).toResponse()
     }
-
-    private fun clientIp(request: HttpServletRequest): String =
-        request.getHeader("X-Forwarded-For")?.split(",")?.firstOrNull()?.trim() ?: request.remoteAddr
 }
-
-data class PlayerRatingRequest(
-    val playerName: String,
-    val score: Int
-)

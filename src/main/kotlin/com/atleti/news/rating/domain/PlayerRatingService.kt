@@ -40,7 +40,7 @@ class PlayerRatingService(
         return ordered.values.toList()
     }
 
-    fun getRatings(matchId: String, ip: String): List<PlayerRatingResponse> {
+    fun getRatings(matchId: String, ip: String): List<PlayerRating> {
         val match = matchResultRepository.findByMatchId(matchId) ?: return emptyList()
         val players = atletiPlayers(match)
         val aggMap = playerRatingVoteRepository.aggregateByMatch(matchId).associateBy { it.playerName }
@@ -48,7 +48,7 @@ class PlayerRatingService(
 
         return players.map { p ->
             val agg = aggMap[p.name]
-            PlayerRatingResponse(
+            PlayerRating(
                 playerName = p.name,
                 shirt = p.shirt,
                 averageScore = agg?.average() ?: 0.0,
@@ -59,7 +59,7 @@ class PlayerRatingService(
     }
 
     @Transactional
-    fun submitRating(matchId: String, playerName: String, score: Int, ip: String): PlayerRatingResponse {
+    fun submitRating(matchId: String, playerName: String, score: Int, ip: String): PlayerRating {
         require(score in MIN_SCORE..MAX_SCORE) { "점수는 $MIN_SCORE~$MAX_SCORE 사이여야 합니다. (입력: $score)" }
 
         val match = matchResultRepository.findByMatchId(matchId)
@@ -89,7 +89,7 @@ class PlayerRatingService(
 
         // 저장 직후 평균 재계산해서 반환 (즉시 반영)
         val agg = playerRatingVoteRepository.aggregateByMatch(matchId).firstOrNull { it.playerName == playerName }
-        return PlayerRatingResponse(
+        return PlayerRating(
             playerName = playerName,
             shirt = player.shirt,
             averageScore = agg?.average() ?: score.toDouble(),
@@ -98,12 +98,3 @@ class PlayerRatingService(
         )
     }
 }
-
-// 응답 DTO
-data class PlayerRatingResponse(
-    val playerName: String,
-    val shirt: String?,
-    val averageScore: Double,  // 0.0 ~ 5.0 (소수 1자리)
-    val voteCount: Long,
-    val myScore: Int?          // 이 IP가 준 점수 (없으면 null)
-)

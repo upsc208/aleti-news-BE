@@ -11,6 +11,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.OffsetDateTime
@@ -26,7 +27,9 @@ class TwitterApiService(
 ) {
     private val log = LoggerFactory.getLogger(TwitterApiService::class.java)
 
-    private val httpClient = HttpClient.newBuilder().build()
+    private val httpClient = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .build()
 
     // 오늘 사용한 API 호출 횟수 확인
     fun getTodayApiUsage(): Int {
@@ -46,6 +49,7 @@ class TwitterApiService(
             .uri(URI.create("https://$apiHost/timeline.php?screenname=$username"))
             .header("X-RapidAPI-Key", apiKey)
             .header("X-RapidAPI-Host", apiHost)
+            .timeout(Duration.ofSeconds(20))
             .method("GET", HttpRequest.BodyPublishers.noBody())
             .build()
 

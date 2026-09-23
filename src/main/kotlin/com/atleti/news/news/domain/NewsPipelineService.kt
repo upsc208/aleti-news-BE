@@ -6,6 +6,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import com.atleti.news.news.external.ArticleDetail
 import com.atleti.news.news.external.GeminiService
@@ -23,6 +24,7 @@ class NewsPipelineService(
     private val youtubeService: YoutubeService,
     private val headlineService: HeadlineService,
     private val newsArticleRepository: NewsArticleRepository,
+    private val articleDeletionService: ArticleDeletionService,
     private val newsSourceRepository: NewsSourceRepository,
     private val collectionLogRepository: CollectionLogRepository,
     @org.springframework.beans.factory.annotation.Value("\${atleti.news.keywords}") private val keywordString: String,
@@ -37,11 +39,14 @@ class NewsPipelineService(
 
     private val keywords = keywordString.split(",").map { it.trim().lowercase() }
 
+    private val manualScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val running = AtomicBoolean(false)
+
     // 고정 15분 간격 스케줄러 (24시간 내내)
     @Scheduled(cron = "0 0/15 * * * *")
     fun scheduledPipeline() = runPipeline()
 
-    // 유튜브는 1시간에 한 번 정도만 체크 (매번 하면 SerpApi 쿼터 낭비)
+    // 유튜브는 1시간에 한 번 정도만 체크
     @Scheduled(cron = "0 5 * * * *")
     fun scheduledYoutubePipeline() = runBlocking {
         if (!isYoutubeEnabled) return@runBlocking
@@ -50,7 +55,6 @@ class NewsPipelineService(
     }
 
     // 헤드라인 브리핑: 6시간마다 최신 뉴스를 종합해 헤드라인 1~2개 생성 (최신 5개 롤링 유지)
-    // 15분 파이프라인이 끝난 뒤 돌도록 :30 오프셋
     @Scheduled(cron = "0 30 0/6 * * *")
     fun scheduledHeadlinePipeline() = runBlocking {
         if (!isHeadlineEnabled) return@runBlocking
@@ -58,9 +62,24 @@ class NewsPipelineService(
         headlineService.generateAndStore()
     }
 
-    // 조회 로그 청소 배치는 Redis 전환으로 제거됨 — 중복 방지 마커가 TTL 24h로 자동 소멸 (docs/redis-design.md Phase 1)
+    // 조회 로그 청소 배치는 Redis 전환으로 제거됨 — 중복 방지 마커가 TTL 24h로 자동 소멸
 
-    fun runPipeline() = runBlocking {
+    fun runPipeline() = runBlocking { pipeline() }
+
+    // 관리자 수동 실행
+    fun startPipeline(): Boolean {
+        if (!running.compareAndSet(false, true)) return false
+        manualScope.launch {
+            try {
+                pipeline()
+            } finally {
+                running.set(false)
+            }
+        }
+        return true
+    }
+
+    private suspend fun pipeline() {
         val scannedCount = AtomicInteger(0)
         val aiProcessedCount = AtomicInteger(0)
         val twitterApiCallCount = AtomicInteger(0)
@@ -93,14 +112,13 @@ class NewsPipelineService(
                     }
                 }
 
-                // 2. Twitter 기자 전수 조사 (로테이션 제거)
+                // 2. Twitter 기자 전수 조사
                 if (isTwitterEnabled && journalists.isNotEmpty()) {
                     journalists.forEach { journalist ->
                         deferredArticles.add(async {
                             val username = journalist.internalId
                             var tweets = emptyList<ScrapedArticle>()
                             
-                            // 매번 잔여 쿼터 확인
                             val currentUsage = initialTwitterUsage + twitterApiCallCount.get()
                             if (currentUsage < twitterDailyLimit) {
                                 try {
@@ -141,6 +159,7 @@ class NewsPipelineService(
         scrapingSemaphore: Semaphore
     ) {
         if (newsArticleRepository.existsByOriginalUrl(article.url)) return
+        if (articleDeletionService.isDeleted(article.url)) return
 
         val isTwitter = article.articleType == ArticleType.SNS_POST
         val isDedicatedMedia = article.sourceName == "Marca" || article.sourceName == "AS"
@@ -170,7 +189,6 @@ class NewsPipelineService(
 
         if (geminiResult != null && (isTwitter || geminiResult.isAtmRelated)) {
             try {
-                // 리트윗이면 제목과 본문에 명시
                 val titleKo = geminiResult.titleKo?.let { if (article.isRetweet) "[리트윗] $it" else it }
                 val contentKo = geminiResult.contentKo?.let {
                     if (article.isRetweet) "🔁 ${article.authorName ?: article.sourceName}님이 리트윗한 글입니다.\n\n$it" else it

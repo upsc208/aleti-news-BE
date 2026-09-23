@@ -1,8 +1,11 @@
 package com.atleti.news.news.domain
 
 import org.slf4j.LoggerFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.jsoup.Jsoup
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
@@ -20,6 +23,7 @@ import com.atleti.news.news.external.GeminiService
 class YoutubeService(
     private val geminiService: GeminiService,
     private val newsArticleRepository: NewsArticleRepository,
+    private val articleDeletionService: ArticleDeletionService,
     @Value("\${serpapi.key}") private val serpApiKey: String
 ) {
     private val log = LoggerFactory.getLogger(YoutubeService::class.java)
@@ -47,6 +51,9 @@ class YoutubeService(
 
         // 2. DB 중복 체크
         if (newsArticleRepository.existsByOriginalUrl(videoUrl)) {
+            return
+        }
+        if (articleDeletionService.isDeleted(videoUrl)) {
             return
         }
 
@@ -87,8 +94,7 @@ class YoutubeService(
     }
 
     /**
-     * 라이브 스트림 탭을 긁는다 (무료 — SerpApi 쿼터를 안 쓴다).
-     * **네트워크만 담당하고 해석은 [parseLatestVideo]에 맡긴다.**
+     * 라이브 스트림 탭을 긁는다 (무료 — SerpApi 쿼터를 안 씀).
      */
     private suspend fun fetchLatestLiveVideoInfo(channelId: String): Pair<String, String>? = withContext(Dispatchers.IO) {
         try {
@@ -104,20 +110,31 @@ class YoutubeService(
     }
 
     /**
-     * 자막을 받아 온다. **네트워크만 담당하고 조립은 [joinTranscript]에 맡긴다.**
-     * 여기서만 SerpApi 쿼터를 1회 쓴다 — 그래서 중복 체크를 통과한 뒤에 부른다.
+     * 자막을 받아 옴
      */
     private suspend fun fetchTranscript(videoId: String): String? = withContext(Dispatchers.IO) {
+        val url = "https://serpapi.com/search.json?engine=youtube_video_transcript&v=$videoId&api_key=$serpApiKey"
         try {
-            val url = "https://serpapi.com/search.json?engine=youtube_video_transcript&v=$videoId&api_key=$serpApiKey"
-            joinTranscript(webClient.get().uri(url).retrieve().awaitBody<Map<String, Any>>())
+            withTimeout(TRANSCRIPT_TIMEOUT_MS) {
+                joinTranscript(webClient.get().uri(url).retrieve().awaitBody<Map<String, Any>>())
+            }
+        } catch (e: TimeoutCancellationException) {
+            log.error("❌ 트랜스크립트 응답 시간 초과 (${TRANSCRIPT_TIMEOUT_MS}ms)")
+            null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            log.error("❌ 트랜스크립트 추출 실패: ${e.message}", e)
+            log.error("❌ 트랜스크립트 추출 실패: ${hideKey(e.message)}")
             null
         }
     }
 
+    private fun hideKey(message: String?): String =
+        message.orEmpty().replace(serpApiKey, "***")
+
     companion object {
+        private const val TRANSCRIPT_TIMEOUT_MS = 60_000L
+
         internal const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
@@ -127,13 +144,6 @@ class YoutubeService(
 
         private val SPAIN: ZoneId = ZoneId.of("Europe/Madrid")
 
-        /**
-         * 스트림 탭 HTML에서 **가장 위(=최신) 영상**의 ID와 상대 발행일을 뽑는다. 순수 함수다.
-         *
-         * 정규식이 처음 찾는 것을 쓴다 — 유튜브가 최신순으로 그려 주기 때문이다.
-         * 발행일을 못 찾으면 `"0 minutes ago"`로 둔다. 그러면 [parseToSpainTime]이 지금 시각으로
-         * 계산하는데, 방금 올라온 영상일 가능성이 제일 높으니 그 편이 낫다.
-         */
         internal fun parseLatestVideo(html: String): Pair<String, String>? {
             val idMatcher = ID_PATTERN.matcher(html)
             if (!idMatcher.find()) return null
@@ -142,17 +152,6 @@ class YoutubeService(
             return idMatcher.group(1) to relativeDate
         }
 
-        /**
-         * `"3 hours ago"` · `"2일 전"` 같은 상대 표기를 실제 시각으로 되돌려 스페인 시간대로 준다.
-         * 순수 함수다 — [now]를 받으므로 같은 입력이면 항상 같은 결과다.
-         *
-         * **판정 순서가 곧 우선순위다.** 한국어 표기는 서로 글자를 품는다 — `"주일"`에는 `"일"`이,
-         * 분 단위 표기에는 숫자가 붙는다. 아래 순서를 바꾸면 `"1주일 전"`이 하루 전으로 읽힌다.
-         * 유튜브 한국어는 보통 `"1주 전"`으로 주지만, 순서에 기대고 있다는 점은 남겨 둔다.
-         *
-         * 모르는 표기(`"1개월 전"` 등)는 [now] 그대로다. 이 파이프라인은 **최신 영상 하나**만
-         * 보므로 한 달 전 영상이 걸릴 일이 사실상 없고, 지어낸 과거 시각보다 낫다.
-         */
         internal fun parseToSpainTime(relative: String, now: Instant): OffsetDateTime {
             val number = Regex("\\d+").find(relative)?.value?.toLong() ?: 0L
 
@@ -166,7 +165,6 @@ class YoutubeService(
             return absolute.atZone(SPAIN).toOffsetDateTime()
         }
 
-        /** SerpApi 응답의 자막 조각을 한 문자열로 잇는다. 조각이 없으면 null */
         @Suppress("UNCHECKED_CAST")
         internal fun joinTranscript(response: Map<String, Any>): String? =
             (response["transcript"] as? List<Map<String, Any>>)

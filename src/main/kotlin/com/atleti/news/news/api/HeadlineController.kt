@@ -1,12 +1,12 @@
 package com.atleti.news.news.api
 
+import com.atleti.news.news.api.dto.HeadlineResponse
 import com.atleti.news.news.domain.NewsHeadlineRepository
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import java.time.OffsetDateTime
 
 @Tag(name = "Headline API", description = "실시간 헤드라인 조회 API")
 @RestController
@@ -27,12 +27,3 @@ class HeadlineController(
         }
     }
 }
-
-/**
- * 헤드라인 조회용 응답 DTO
- */
-data class HeadlineResponse(
-    val id: Long,
-    val content: String,
-    val createdAt: OffsetDateTime
-)
