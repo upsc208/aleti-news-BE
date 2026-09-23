@@ -5,17 +5,16 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 
-/* 없는 자원과 잘못된 입력을 500이 아니라 제 상태 코드로 내보냄*/
 @RestControllerAdvice
-class ApiExceptionHandler {
+class GlobalExceptionHandler {
 
-    @ExceptionHandler(NoSuchElementException::class)
-    fun handleNotFound(e: NoSuchElementException): ResponseEntity<Map<String, String>> =
+    @ExceptionHandler(NotFoundException::class)
+    fun handleNotFound(e: NotFoundException): ResponseEntity<Map<String, String>> =
         ResponseEntity.status(HttpStatus.NOT_FOUND)
             .body(mapOf("error" to (e.message ?: "요청한 자원을 찾을 수 없습니다.")))
 
-    @ExceptionHandler(IllegalArgumentException::class)
-    fun handleBadRequest(e: IllegalArgumentException): ResponseEntity<Map<String, String>> =
+    @ExceptionHandler(InvalidRequestException::class)
+    fun handleInvalidRequest(e: InvalidRequestException): ResponseEntity<Map<String, String>> =
         ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(mapOf("error" to (e.message ?: "요청이 올바르지 않습니다.")))
 }
