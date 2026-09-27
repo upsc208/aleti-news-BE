@@ -57,6 +57,17 @@ class ArticleDeletionServiceTest {
     }
 
     @Test
+    fun `보관 기간이 지난 기록만 정리한다`() {
+        service.cleanUpOldRecords()
+
+        // capture()는 null을 돌려주므로 코틀린에서는 기본값을 붙여 준다
+        val cutoff = ArgumentCaptor.forClass(OffsetDateTime::class.java)
+        verify(deleted).deleteByDeletedAtBefore(cutoff.capture() ?: OffsetDateTime.now())
+        assertThat(cutoff.value).isBefore(OffsetDateTime.now().minusDays(89))
+        assertThat(cutoff.value).isAfter(OffsetDateTime.now().minusDays(91))
+    }
+
+    @Test
     fun `지운 주소인지 물어볼 수 있다`() {
         `when`(deleted.existsByOriginalUrl(URL)).thenReturn(true)
 

@@ -9,12 +9,14 @@ import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
+import org.springframework.transaction.annotation.Transactional
 
 @Repository
 interface NewsArticleRepository : JpaRepository<NewsArticle, Long> {
     fun existsByOriginalUrl(originalUrl: String): Boolean
 
     @Modifying
+    @Transactional
     @Query("UPDATE NewsArticle n SET n.viewCount = n.viewCount + 1 WHERE n.id = :id")
     fun increaseViewCount(@Param("id") id: Long): Int
 

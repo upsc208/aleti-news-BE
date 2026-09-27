@@ -4,6 +4,8 @@ import com.atleti.news.match.domain.MatchResult
 import com.atleti.news.match.domain.LineupInfo
 import com.atleti.news.match.domain.PlayerInfo
 import com.atleti.news.match.domain.SubstitutionInfo
+import com.atleti.news.common.InvalidRequestException
+import com.atleti.news.common.NotFoundException
 import com.atleti.news.match.domain.MatchResultRepository
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
@@ -22,7 +24,7 @@ class PlayerRatingService(
         const val MAX_SCORE = 5
     }
 
-    // 해당 경기에서 뛴 아틀레티코 선수 목록 (선발 + 교체 투입). isHome으로 아틀레티코 진영 판별.
+    // 해당 경기에서 뛴 아틀레티코 선수 목록 (선발 + 교체 투입). isHome으로 아틀레티코 진영 판별
     private fun atletiPlayers(match: MatchResult): List<PlayerInfo> {
         val lineup = match.lineup
             ?.let { try { objectMapper.readValue<LineupInfo>(it) } catch (e: Exception) { null } }
@@ -60,14 +62,16 @@ class PlayerRatingService(
 
     @Transactional
     fun submitRating(matchId: String, playerName: String, score: Int, ip: String): PlayerRating {
-        require(score in MIN_SCORE..MAX_SCORE) { "점수는 $MIN_SCORE~$MAX_SCORE 사이여야 합니다. (입력: $score)" }
+        if (score !in MIN_SCORE..MAX_SCORE) {
+            throw InvalidRequestException("점수는 $MIN_SCORE~$MAX_SCORE 사이여야 합니다. (입력: $score)")
+        }
 
         val match = matchResultRepository.findByMatchId(matchId)
-            ?: throw NoSuchElementException("해당 경기를 찾을 수 없습니다: $matchId")
+            ?: throw NotFoundException("해당 경기를 찾을 수 없습니다: $matchId")
 
-        // 실제로 그 경기에서 뛴 아틀레티코 선수만 평가 가능 (임의 이름 스팸 방지)
+        // 실제로 그 경기에서 뛴 아틀레티코 선수만 평가 가능
         val player = atletiPlayers(match).firstOrNull { it.name == playerName }
-            ?: throw IllegalArgumentException("이 경기에서 뛴 아틀레티코 선수가 아닙니다: $playerName")
+            ?: throw InvalidRequestException("이 경기에서 뛴 아틀레티코 선수가 아닙니다: $playerName")
 
         val existing = playerRatingVoteRepository.findByMatchIdAndPlayerNameAndIpAddress(matchId, playerName, ip)
         if (existing != null) {
@@ -87,7 +91,7 @@ class PlayerRatingService(
             )
         }
 
-        // 저장 직후 평균 재계산해서 반환 (즉시 반영)
+        // 저장 직후 평균 재계산해서 반환
         val agg = playerRatingVoteRepository.aggregateByMatch(matchId).firstOrNull { it.playerName == playerName }
         return PlayerRating(
             playerName = playerName,

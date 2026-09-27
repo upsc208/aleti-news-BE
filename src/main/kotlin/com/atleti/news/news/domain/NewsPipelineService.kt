@@ -44,7 +44,17 @@ class NewsPipelineService(
 
     // 고정 15분 간격 스케줄러 (24시간 내내)
     @Scheduled(cron = "0 0/15 * * * *")
-    fun scheduledPipeline() = runPipeline()
+    fun scheduledPipeline() {
+        if (!running.compareAndSet(false, true)) {
+            log.info("⏭️ 수집이 이미 돌고 있어 이번 정시는 건너뜁니다")
+            return
+        }
+        try {
+            runPipeline()
+        } finally {
+            running.set(false)
+        }
+    }
 
     // 유튜브는 1시간에 한 번 정도만 체크
     @Scheduled(cron = "0 5 * * * *")

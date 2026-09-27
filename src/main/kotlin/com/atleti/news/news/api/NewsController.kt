@@ -1,6 +1,7 @@
 package com.atleti.news.news.api
 
 import com.atleti.news.common.ClientIp
+import com.atleti.news.common.NotFoundException
 import com.atleti.news.news.api.dto.NewsDetailResponse
 import com.atleti.news.news.api.dto.NewsListResponse
 import com.atleti.news.news.api.dto.NewsSourceResponse
@@ -76,9 +77,8 @@ class NewsController(
     @GetMapping("/{id}")
     fun getNewsDetail(@PathVariable id: Long, request: HttpServletRequest): NewsDetailResponse {
         val article = newsArticleRepository.findById(id)
-            .orElseThrow { NoSuchElementException("해당 기사를 찾을 수 없습니다. ID: $id") }
+            .orElseThrow { NotFoundException("해당 기사를 찾을 수 없습니다. ID: $id") }
 
-        // 올린 뒤 다시 읽지 않고 화면에 보일 값만 더한다
         val counted = viewCountService.countView(id, ClientIp.of(request))
         val viewCount = article.viewCount + if (counted) 1 else 0
 

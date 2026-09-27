@@ -1,8 +1,10 @@
 package com.atleti.news.news.domain
 
 import org.slf4j.LoggerFactory
+import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.time.OffsetDateTime
 
 /* 기사 삭제. 지운 주소를 남겨 둠. 삭제한 기사를 다시 수집 안하게 하기 위함*/
 @Service
@@ -28,4 +30,15 @@ class ArticleDeletionService(
     }
 
     fun isDeleted(originalUrl: String): Boolean = deletedArticleRepository.existsByOriginalUrl(originalUrl)
+
+    @Scheduled(cron = "0 20 4 * * *", zone = "Asia/Seoul")
+    @Transactional
+    fun cleanUpOldRecords() {
+        val removed = deletedArticleRepository.deleteByDeletedAtBefore(OffsetDateTime.now().minusDays(RETENTION_DAYS))
+        if (removed > 0) log.info("🧹 삭제 기록 ${removed}건 정리 (보관 ${RETENTION_DAYS}일)")
+    }
+
+    private companion object {
+        const val RETENTION_DAYS = 90L
+    }
 }
